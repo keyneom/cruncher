@@ -1,3 +1,14 @@
+extern crate nom;
+
+use nom::{
+    IResult,
+  character::complete::{digit1 as digit, multispace0 as multispace},
+  sequence::{preceded, delimited},
+  combinator::{map, map_res},
+  multi::many0,
+  branch::alt,
+  bytes::complete::tag,
+};
 use crate::error::Error;
 use crate::lexer::is_variable;
 use crate::token::{Op, Token};
@@ -71,7 +82,7 @@ impl Ast {
 
     /// If the AST node correspond to a constant, get `Some(constant)`. Else,
     /// get `None`
-    pub fn value(&self) -> Option<f64> {
+    pub fn extract_value(&self) -> Option<f64> {
         if let Self::Value(value) = *self {
             Some(value)
         } else {
@@ -85,7 +96,7 @@ impl Ast {
             Self::Variable(_) | Self::Value(_) => self,
             Self::Function(func, arg) => {
                 let arg = arg.optimize();
-                if let Some(arg) = arg.value() {
+                if let Some(arg) = arg.extract_value() {
                     return Self::Value(func(arg));
                 }
                 return Self::Function(func, Box::new(arg));
@@ -93,8 +104,8 @@ impl Ast {
             Self::Add(left, right) => {
                 let left = left.optimize();
                 let right = right.optimize();
-                if let Some(left) = left.value() {
-                    if let Some(right) = right.value() {
+                if let Some(left) = left.extract_value() {
+                    if let Some(right) = right.extract_value() {
                         return Self::Value(left + right);
                     }
                 }
@@ -103,8 +114,8 @@ impl Ast {
             Self::Sub(left, right) => {
                 let left = left.optimize();
                 let right = right.optimize();
-                if let Some(left) = left.value() {
-                    if let Some(right) = right.value() {
+                if let Some(left) = left.extract_value() {
+                    if let Some(right) = right.extract_value() {
                         return Self::Value(left - right);
                     }
                 }
@@ -113,8 +124,8 @@ impl Ast {
             Self::Mul(left, right) => {
                 let left = left.optimize();
                 let right = right.optimize();
-                if let Some(left) = left.value() {
-                    if let Some(right) = right.value() {
+                if let Some(left) = left.extract_value() {
+                    if let Some(right) = right.extract_value() {
                         return Self::Value(left * right);
                     }
                 }
@@ -123,8 +134,8 @@ impl Ast {
             Self::Div(left, right) => {
                 let left = left.optimize();
                 let right = right.optimize();
-                if let Some(left) = left.value() {
-                    if let Some(right) = right.value() {
+                if let Some(left) = left.extract_value() {
+                    if let Some(right) = right.extract_value() {
                         return Self::Value(left / right);
                     }
                 }
@@ -133,8 +144,8 @@ impl Ast {
             Self::Exp(left, right) => {
                 let left = left.optimize();
                 let right = right.optimize();
-                if let Some(left) = left.value() {
-                    if let Some(right) = right.value() {
+                if let Some(left) = left.extract_value() {
+                    if let Some(right) = right.extract_value() {
                         return Self::Value(left.powf(right));
                     }
                 }
@@ -142,26 +153,87 @@ impl Ast {
             }
         }
     }
+
+    fn parse_operation(input: &str) -> IResult<&str, Self, Error> {
+        todo!("unimplemented")
+    }
+
+    fn function(partial: &str) -> IResult<&str, Self, Error> {
+        todo!("unimplemented")
+    }
+
+    fn value(partial: &str) -> IResult<&str, Self, Error> {
+        todo!("unimplemented")
+    }
+
+    fn variable(partial: &str) -> IResult<&str, Self, Error> {
+        todo!("unimplemented")
+    }
+
+    fn exponent(partial: &str) -> IResult<&str, Self, Error> {
+        todo!("unimplemented")
+    }
+
+    fn multiplication(partial: &str) -> IResult<&str, Self, Error> {
+        todo!("unimplemented")
+    }
+
+    fn division(partial: &str) -> IResult<&str, Self, Error> {
+        todo!("unimplemented")
+    }
+
+    fn addition(partial: &str) -> IResult<&str, Self, Error> {
+        todo!("unimplemented")
+    }
+
+    fn subtraction(partial: &str) -> IResult<&str, Self, Error> {
+        todo!("unimplemented")
+    }
+
+    pub fn new(equation: &str) -> Result<Self, Error> {
+        alt((
+            function()
+            , value()
+            , variable()
+            , exponent()
+            , multiplication()
+            , division()
+            , addition()
+            , subtraction()
+        ))(equation)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::lexer::Lexer;
+    use test_case::test_case;
+
+
+    #[test_case("2 + 2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Plus)]) ; "addition is parsed properly")]
+    #[test_case("6 - 2" => Ok(vec![Token::Value("6".to_string()), Token::Value("2".to_string()), Token::Op(Op::Minus)]) ; "subtraction is parsed properly")]
+    #[test_case("2 * 2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Mul)]) ; "multiplication is parsed properly")]
+    #[test_case("8 / 2" => Ok(vec![Token::Value("8".to_string()), Token::Value("2".to_string()), Token::Op(Op::Div)]) ; "division is parsed properly")]
+    #[test_case("2+2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Plus)]) ; "spaces are parsed properly")]
+    #[test_case("6 + -2" => Ok(vec![Token::Value("6".to_string()), Token::Value("-2".to_string()), Token::Op(Op::Plus)]) ; "negatives are parsed properly")]
+    fn parse(equation: &str) -> Result<Vec<Token>, Error> {
+        Lexer::new(equation).parse()
+    }
 
     #[test]
     // Verifies that we have reduced the input to a single value token when possible
     fn optimize() {
         let mut lexer = Lexer::new("3 + 5");
         let ast = Ast::from_tokens(&mut lexer.parse().unwrap(), "").unwrap();
-        assert_eq!(ast.value(), Some(8.0));
+        assert_eq!(ast.extract_value(), Some(8.0));
 
         let mut lexer = Lexer::new("(3 + 5^2)*45");
         let ast = Ast::from_tokens(&mut lexer.parse().unwrap(), "").unwrap();
-        assert_eq!(ast.value(), Some(1260.0));
+        assert_eq!(ast.extract_value(), Some(1260.0));
 
         let mut lexer = Lexer::new("sqrt(9)");
         let ast = Ast::from_tokens(&mut lexer.parse().unwrap(), "").unwrap();
-        assert_eq!(ast.value(), Some(3.0));
+        assert_eq!(ast.extract_value(), Some(3.0));
     }
 }
