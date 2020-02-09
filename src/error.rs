@@ -1,3 +1,4 @@
+use nom::error::ErrorKind;
 use std::error;
 use std::fmt::{self, Display, Formatter};
 
@@ -32,5 +33,25 @@ impl error::Error for Error {
         match *self {
             Self::ParseError(_) | Self::NameError(_) => None,
         }
+    }
+}
+
+impl nom::error::ParseError<&str> for Error {
+    fn from_error_kind(input: &str, kind: ErrorKind) -> Error {
+        Error::ParseError(format!(
+            "Error during parsing with ErrorKind: {} and equation: {}",
+            kind.description(),
+            input
+        ))
+    }
+
+    fn append(input: &str, kind: ErrorKind, other: Self) -> Self {
+        Error::ParseError(format!(
+            "Error during parsing with ErrorKind: {} and equation: {}
+{}",
+            kind.description(),
+            input,
+            other
+        ))
     }
 }

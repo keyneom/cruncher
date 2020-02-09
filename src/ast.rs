@@ -1,18 +1,18 @@
 extern crate nom;
 
-use nom::{
-    IResult,
-  character::complete::{digit1 as digit, multispace0 as multispace},
-  sequence::{preceded, delimited},
-  combinator::{map, map_res},
-  multi::many0,
-  branch::alt,
-  bytes::complete::tag,
-};
 use crate::error::Error;
 use crate::lexer::is_variable;
 use crate::token::{Op, Token};
 use crate::util::FUNCTIONS;
+use nom::{
+    branch::alt,
+    bytes::complete::tag,
+    character::complete::{digit1 as digit, multispace0 as multispace},
+    combinator::{map, map_res},
+    multi::many0,
+    sequence::{delimited, preceded},
+    IResult,
+};
 
 /// Ast nodes for the expressions
 #[derive(Debug, Clone, PartialEq)]
@@ -191,16 +191,45 @@ impl Ast {
     }
 
     pub fn new(equation: &str) -> Result<Self, Error> {
-        alt((
-            function()
-            , value()
-            , variable()
-            , exponent()
-            , multiplication()
-            , division()
-            , addition()
-            , subtraction()
-        ))(equation)
+        let mut result = Err(Error::ParseError("Unknown Parse Error".into()));
+        loop {
+            let parse_result = alt((Self::value, Self::variable))(equation);
+            // match parse_result {
+            //     Ok((remaining, token)) => {
+            //         result = Ok(token);
+            //     }
+            //     Err(nom::Err::Error(e)) => {
+            //         result = Err(e);
+            //     }
+            //     Err(_) => {
+            //         result = Err(Error::ParseError(
+            //             "Unknown Parse Error building AST".to_string(),
+            //         ))
+            //     }
+            // }
+
+            if result.is_ok() {
+                let (remaining, ast) = parse_result.unwrap();
+                if remaining.is_empty() {
+                    result = Ok(ast);
+                    break;
+                }
+            } else {
+                match parse_result {
+                    Err(nom::Err::Error(e)) => {
+                        result = Err(e);
+                    }
+                    Err(_) => {
+                        result = Err(Error::ParseError(
+                            "Unknown Parse Error building AST".to_string(),
+                        ))
+                    }
+                    Ok(_) => panic!("Should be impossible!"),
+                }
+                break;
+            }
+        }
+        result
     }
 }
 
@@ -210,15 +239,19 @@ mod tests {
     use crate::lexer::Lexer;
     use test_case::test_case;
 
-
-    #[test_case("2 + 2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Plus)]) ; "addition is parsed properly")]
-    #[test_case("6 - 2" => Ok(vec![Token::Value("6".to_string()), Token::Value("2".to_string()), Token::Op(Op::Minus)]) ; "subtraction is parsed properly")]
-    #[test_case("2 * 2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Mul)]) ; "multiplication is parsed properly")]
-    #[test_case("8 / 2" => Ok(vec![Token::Value("8".to_string()), Token::Value("2".to_string()), Token::Op(Op::Div)]) ; "division is parsed properly")]
-    #[test_case("2+2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Plus)]) ; "spaces are parsed properly")]
-    #[test_case("6 + -2" => Ok(vec![Token::Value("6".to_string()), Token::Value("-2".to_string()), Token::Op(Op::Plus)]) ; "negatives are parsed properly")]
-    fn parse(equation: &str) -> Result<Vec<Token>, Error> {
-        Lexer::new(equation).parse()
+    #[test_case("2" => Ok(Ast::Value(2.0)) ; "single-digit integers are parsed properly")]
+    #[test_case("256" => Ok(Ast::Value(256.0)) ; "multi-digit integers are parsed properly")]
+    #[test_case("2.56" => Ok(Ast::Value(2.56)) ; "floats are parsed properly")]
+    #[test_case("x" => Ok(Ast::Variable("x".to_string())) ; "single-character variables are parsed properly")]
+    #[test_case("xyz" => Ok(Ast::Variable("xyz".to_string())) ; "multi-character variables are parsed properly")]
+    // #[test_case("2 + 2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Plus)]) ; "addition is parsed properly")]
+    // #[test_case("6 - 2" => Ok(vec![Token::Value("6".to_string()), Token::Value("2".to_string()), Token::Op(Op::Minus)]) ; "subtraction is parsed properly")]
+    // #[test_case("2 * 2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Mul)]) ; "multiplication is parsed properly")]
+    // #[test_case("8 / 2" => Ok(vec![Token::Value("8".to_string()), Token::Value("2".to_string()), Token::Op(Op::Div)]) ; "division is parsed properly")]
+    // #[test_case("2+2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Plus)]) ; "spaces are parsed properly")]
+    // #[test_case("6 + -2" => Ok(vec![Token::Value("6".to_string()), Token::Value("-2".to_string()), Token::Op(Op::Plus)]) ; "negatives are parsed properly")]
+    fn parse(equation: &str) -> Result<Ast, Error> {
+        Ast::new(equation)
     }
 
     #[test]
