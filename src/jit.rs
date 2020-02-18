@@ -65,6 +65,9 @@ impl JIT {
     }
 
     /// Compile a string in the toy language into machine code.
+    /// # Errors
+    ///
+    /// Will return error if algebraic is malformed
     pub fn compile(
         &mut self,
         input: &str,

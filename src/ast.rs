@@ -4,15 +4,9 @@ use crate::error::Error;
 use crate::lexer::is_variable;
 use crate::token::{Op, Token};
 use crate::util::FUNCTIONS;
-use nom::{
-    branch::alt,
-    bytes::complete::tag,
-    character::complete::{digit1 as digit, multispace0 as multispace},
-    combinator::{map, map_res},
-    multi::many0,
-    sequence::{delimited, preceded},
-    IResult,
-};
+use nom::character::complete::{alpha1, multispace0};
+use nom::sequence::delimited;
+use nom::{branch::alt, IResult};
 
 /// Ast nodes for the expressions
 #[derive(Debug, Clone, PartialEq)]
@@ -167,7 +161,9 @@ impl Ast {
     }
 
     fn variable(partial: &str) -> IResult<&str, Self, Error> {
-        todo!("unimplemented")
+        let (remaining, var_name) = delimited(multispace0, alpha1, multispace0)(partial)?;
+        let var = Self::Variable(var_name.to_string());
+        Ok((remaining, var))
     }
 
     fn exponent(partial: &str) -> IResult<&str, Self, Error> {
@@ -250,6 +246,7 @@ mod tests {
     // #[test_case("8 / 2" => Ok(vec![Token::Value("8".to_string()), Token::Value("2".to_string()), Token::Op(Op::Div)]) ; "division is parsed properly")]
     // #[test_case("2+2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Plus)]) ; "spaces are parsed properly")]
     // #[test_case("6 + -2" => Ok(vec![Token::Value("6".to_string()), Token::Value("-2".to_string()), Token::Op(Op::Plus)]) ; "negatives are parsed properly")]
+    // #[test_case("4+5*3" => Ok(vec![Token::Value("4".to_string()), Token::Value("5".to_string()), Token::Value("3".to_string()), Token::Op(Op::Mul), Token::Op(Op::Plus)]) ; "negatives are parsed properly")]
     fn parse(equation: &str) -> Result<Ast, Error> {
         Ast::new(equation)
     }
@@ -257,6 +254,10 @@ mod tests {
     #[test]
     // Verifies that we have reduced the input to a single value token when possible
     fn optimize() {
+        let mut lexer = Lexer::new("4 + 5 * 3");
+        let ast = Ast::from_tokens(&mut lexer.parse().unwrap(), "").unwrap();
+        assert_eq!(ast.extract_value(), Some(18.0));
+
         let mut lexer = Lexer::new("3 + 5");
         let ast = Ast::from_tokens(&mut lexer.parse().unwrap(), "").unwrap();
         assert_eq!(ast.extract_value(), Some(8.0));
