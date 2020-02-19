@@ -5,6 +5,7 @@ use crate::lexer::is_variable;
 use crate::token::{Op, Token};
 use crate::util::FUNCTIONS;
 use nom::character::complete::{alpha1, multispace0};
+use nom::number::complete::double;
 use nom::sequence::delimited;
 use nom::{branch::alt, IResult};
 
@@ -157,7 +158,8 @@ impl Ast {
     }
 
     fn value(partial: &str) -> IResult<&str, Self, Error> {
-        todo!("unimplemented")
+        let (remaining, val) = delimited(multispace0, double, multispace0)(partial)?;
+        Ok((remaining, Self::Value(val)))
     }
 
     fn variable(partial: &str) -> IResult<&str, Self, Error> {
@@ -188,27 +190,16 @@ impl Ast {
 
     pub fn new(equation: &str) -> Result<Self, Error> {
         let mut result = Err(Error::ParseError("Unknown Parse Error".into()));
+        let mut current_remaining = equation;
         loop {
-            let parse_result = alt((Self::value, Self::variable))(equation);
-            // match parse_result {
-            //     Ok((remaining, token)) => {
-            //         result = Ok(token);
-            //     }
-            //     Err(nom::Err::Error(e)) => {
-            //         result = Err(e);
-            //     }
-            //     Err(_) => {
-            //         result = Err(Error::ParseError(
-            //             "Unknown Parse Error building AST".to_string(),
-            //         ))
-            //     }
-            // }
+            let parse_result = alt((Self::value, Self::variable))(current_remaining);
 
-            if result.is_ok() {
+            if parse_result.is_ok() {
                 let (remaining, ast) = parse_result.unwrap();
                 if remaining.is_empty() {
                     result = Ok(ast);
                     break;
+                } else {
                 }
             } else {
                 match parse_result {
@@ -231,16 +222,22 @@ impl Ast {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Ast, Error};
+    use super::{
+        Ast::Add, Ast::Div, Ast::Exp, Ast::Function, Ast::Mul, Ast::Sub, Ast::Value, Ast::Variable,
+    };
     use crate::lexer::Lexer;
     use test_case::test_case;
 
-    #[test_case("2" => Ok(Ast::Value(2.0)) ; "single-digit integers are parsed properly")]
-    #[test_case("256" => Ok(Ast::Value(256.0)) ; "multi-digit integers are parsed properly")]
-    #[test_case("2.56" => Ok(Ast::Value(2.56)) ; "floats are parsed properly")]
-    #[test_case("x" => Ok(Ast::Variable("x".to_string())) ; "single-character variables are parsed properly")]
-    #[test_case("xyz" => Ok(Ast::Variable("xyz".to_string())) ; "multi-character variables are parsed properly")]
-    // #[test_case("2 + 2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Plus)]) ; "addition is parsed properly")]
+    #[test_case("2" => Ok(Value(2.0)) ; "single-digit integers are parsed properly")]
+    #[test_case("256" => Ok(Value(256.0)) ; "multi-digit integers are parsed properly")]
+    #[test_case("   256     " => Ok(Value(256.0)) ; "multi-digit integers surrounded with whitespace are parsed properly")]
+    #[test_case("2.56" => Ok(Value(2.56)) ; "floats are parsed properly")]
+    #[test_case("    2.56   " => Ok(Value(2.56)) ; "floats surrounded with whitespace are parsed properly")]
+    #[test_case("x" => Ok(Variable("x".to_string())) ; "single-character variables are parsed properly")]
+    #[test_case("xyz" => Ok(Variable("xyz".to_string())) ; "multi-character variables are parsed properly")]
+    #[test_case("   xyz     " => Ok(Variable("xyz".to_string())) ; "multi-character variables with whitespace are parsed properly")]
+    #[test_case("2 + 2" => Ok(Add(Box::new(Value(2.0)), Box::new(Value(2.0)))) ; "addition is parsed properly")]
     // #[test_case("6 - 2" => Ok(vec![Token::Value("6".to_string()), Token::Value("2".to_string()), Token::Op(Op::Minus)]) ; "subtraction is parsed properly")]
     // #[test_case("2 * 2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Mul)]) ; "multiplication is parsed properly")]
     // #[test_case("8 / 2" => Ok(vec![Token::Value("8".to_string()), Token::Value("2".to_string()), Token::Op(Op::Div)]) ; "division is parsed properly")]
@@ -256,7 +253,7 @@ mod tests {
     fn optimize() {
         let mut lexer = Lexer::new("4 + 5 * 3");
         let ast = Ast::from_tokens(&mut lexer.parse().unwrap(), "").unwrap();
-        assert_eq!(ast.extract_value(), Some(18.0));
+        assert_eq!(ast.extract_value(), Some(19.0));
 
         let mut lexer = Lexer::new("3 + 5");
         let ast = Ast::from_tokens(&mut lexer.parse().unwrap(), "").unwrap();
