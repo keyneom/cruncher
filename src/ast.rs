@@ -2,12 +2,26 @@ extern crate nom;
 
 use crate::error::Error;
 use crate::lexer::is_variable;
-use crate::token::{Op, Token};
+use crate::token::Token;
 use crate::util::FUNCTIONS;
+use nom::bytes::complete::is_not;
+use nom::bytes::complete::tag;
+use nom::bytes::complete::take_till;
+use nom::bytes::complete::take_until;
+use nom::character::complete::one_of;
 use nom::character::complete::{alpha1, multispace0};
 use nom::number::complete::double;
 use nom::sequence::delimited;
 use nom::{branch::alt, IResult};
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub enum Op {
+    Minus,
+    Plus,
+    Div,
+    Mul,
+    Exp,
+}
 
 /// Ast nodes for the expressions
 #[derive(Debug, Clone, PartialEq)]
@@ -61,11 +75,11 @@ impl Ast {
                     let right = Box::new(Self::from_tokens(tokens, " after operator")?);
                     let left = Box::new(Self::from_tokens(tokens, " befor operator")?);
                     match op {
-                        Op::Plus => Ok(Self::Add(left, right)),
-                        Op::Minus => Ok(Self::Sub(left, right)),
-                        Op::Mul => Ok(Self::Mul(left, right)),
-                        Op::Div => Ok(Self::Div(left, right)),
-                        Op::Exp => Ok(Self::Exp(left, right)),
+                        crate::token::Op::Plus => Ok(Self::Add(left, right)),
+                        crate::token::Op::Minus => Ok(Self::Sub(left, right)),
+                        crate::token::Op::Mul => Ok(Self::Mul(left, right)),
+                        crate::token::Op::Div => Ok(Self::Div(left, right)),
+                        crate::token::Op::Exp => Ok(Self::Exp(left, right)),
                     }
                 }
                 other => panic!("Internal error: got {:?} token after shunting yard", other),
@@ -188,11 +202,153 @@ impl Ast {
         todo!("unimplemented")
     }
 
+    fn parse_expr(partial: &str) -> IResult<&str, Self, Error> {
+        todo!("Haven't implemented yet")
+    }
+
+    fn parenthesis(partial: &str) -> IResult<&str, Self, Error> {
+        let (remaining, outside_parens) = take_until("(")(partial)?;
+        let (remaining, left_or_inside_parens) =
+            take_till(|c| c == '(' || c == ')')(&remaining[1..])?;
+        let result = match remaining.as_bytes() {
+            [b'(', right @ ..] => {
+                // More parenthesis inside!
+                let left_side_phrase = left_or_inside_parens.trim();
+                // Determine op for left side phrase
+                let left_side_op = Self::get_leftside_op(left_side_phrase);
+                let (right_side_phrase, inner) = Self::parenthesis(remaining)?;
+                let right_side_phrase = right_side_phrase.trim();
+                let right_side_op = Self::get_rightside_op(right_side_phrase);
+                // Determine which side `inner` (the nested parenthesis) ought to be applied to based off of order of operations
+                match (left_side_op, right_side_op) {
+                    (Ok(left_op), Ok(right_op)) => Self::generate_result(
+                        left_op,
+                        left_side_phrase,
+                        inner,
+                        right_op,
+                        right_side_phrase,
+                    ),
+                    (Err(e), _) | (_, Err(e)) => Err(e),
+                }
+            }
+            [b')', right @ ..] => {
+                // We finished this parenthesis pair
+                let inside_parens = left_or_inside_parens.trim();
+                let res = Self::new(inside_parens);
+                match res {
+                    Ok(r) => Ok((&remaining[1..], r)),
+                    Err(e) => Err(nom::Err::Error(e)),
+                }
+                // return right as the remainder
+            }
+            _ => {
+                // Imbalanced parenthesis
+                Err(nom::Err::Error(Error::ParseError(
+                    "parenthesis are not properly balanced".to_string(),
+                )))
+            }
+        };
+        result
+    }
+
+    fn generate_result<'lifetime>(
+        left_op: Option<Op>,
+        left_side_phrase: &str,
+        inner: Ast,
+        right_op: Option<Op>,
+        right_side_phrase: &str,
+    ) -> Result<(&'lifetime str, Self), nom::Err<Error>> {
+        if left_op >= right_op {
+            match left_op {
+                Some(Op::Exp) => {
+                    let left_ast =
+                        Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
+                    Ok(("", Self::Exp(Box::new(left_ast), Box::new(inner))))
+                }
+                Some(Op::Mul) => {
+                    let left_ast =
+                        Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
+                    Ok(("", Self::Mul(Box::new(left_ast), Box::new(inner))))
+                }
+                Some(Op::Div) => {
+                    let left_ast =
+                        Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
+                    Ok(("", Self::Div(Box::new(left_ast), Box::new(inner))))
+                }
+                Some(Op::Plus) => {
+                    let left_ast =
+                        Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
+                    Ok(("", Self::Add(Box::new(left_ast), Box::new(inner))))
+                }
+                Some(Op::Minus) => {
+                    let left_ast =
+                        Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
+                    Ok(("", Self::Sub(Box::new(left_ast), Box::new(inner))))
+                }
+                None => Ok(("", inner)),
+            }
+        } else {
+            match right_op {
+                Some(Op::Exp) => {
+                    let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
+                    Ok(("", Self::Exp(Box::new(right_ast), Box::new(inner))))
+                }
+                Some(Op::Mul) => {
+                    let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
+                    Ok(("", Self::Mul(Box::new(right_ast), Box::new(inner))))
+                }
+                Some(Op::Div) => {
+                    let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
+                    Ok(("", Self::Div(Box::new(right_ast), Box::new(inner))))
+                }
+                Some(Op::Plus) => {
+                    let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
+                    Ok(("", Self::Add(Box::new(right_ast), Box::new(inner))))
+                }
+                Some(Op::Minus) => {
+                    let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
+                    Ok(("", Self::Sub(Box::new(right_ast), Box::new(inner))))
+                }
+                None => Ok(("", inner)),
+            }
+        }
+    }
+
+    fn get_leftside_op(left_side_phrase: &str) -> Result<Option<Op>, nom::Err<Error>> {
+        match left_side_phrase.as_bytes() {
+            [left_expr @ .., b'^'] => Ok(Some(Op::Exp)),
+            [left_expr @ .., b'*'] => Ok(Some(Op::Mul)),
+            [left_expr @ .., b'/'] => Ok(Some(Op::Div)),
+            [left_expr @ .., b'+'] => Ok(Some(Op::Plus)),
+            [left_expr @ .., b'-'] => Ok(Some(Op::Minus)),
+            [] => Ok(None),
+            _ => Err(nom::Err::Error(Error::ParseError(
+                "malformed expression within parethesis".to_string(),
+            ))),
+        }
+    }
+
+    fn get_rightside_op(right_side_phrase: &str) -> Result<Option<Op>, nom::Err<Error>> {
+        match right_side_phrase.as_bytes() {
+            [b'^', right_expr @ ..] => Ok(Some(Op::Exp)),
+            [b'*', right_expr @ ..] => Ok(Some(Op::Mul)),
+            [b'/', right_expr @ ..] => Ok(Some(Op::Div)),
+            [b'+', right_expr @ ..] => Ok(Some(Op::Plus)),
+            [b'-', right_expr @ ..] => Ok(Some(Op::Minus)),
+            [b')', right_expr @ ..] => Ok(None),
+            [] => Ok(None),
+            _ => Err(nom::Err::Error(Error::ParseError(
+                "malformed expression within parethesis".to_string(),
+            ))),
+        }
+    }
+
     pub fn new(equation: &str) -> Result<Self, Error> {
         let mut result = Err(Error::ParseError("Unknown Parse Error".into()));
         let mut current_remaining = equation;
         loop {
-            let parse_result = alt((Self::value, Self::variable))(current_remaining);
+            let parse_result =
+                alt((Self::parenthesis, Self::value, Self::variable))(current_remaining);
 
             if parse_result.is_ok() {
                 let (remaining, ast) = parse_result.unwrap();
@@ -230,6 +386,8 @@ mod tests {
     use test_case::test_case;
 
     #[test_case("2" => Ok(Value(2.0)) ; "single-digit integers are parsed properly")]
+    #[test_case("(2)" => Ok(Value(2.0)) ; "values encased by parenthesis are parsed properly")]
+    #[test_case("((2))" => Ok(Value(2.0)) ; "values encased in nested parenthesis are parsed properly")]
     #[test_case("256" => Ok(Value(256.0)) ; "multi-digit integers are parsed properly")]
     #[test_case("   256     " => Ok(Value(256.0)) ; "multi-digit integers surrounded with whitespace are parsed properly")]
     #[test_case("2.56" => Ok(Value(2.56)) ; "floats are parsed properly")]
