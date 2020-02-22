@@ -9,7 +9,7 @@ use nom::bytes::complete::tag;
 use nom::bytes::complete::take_till;
 use nom::bytes::complete::take_until;
 use nom::character::complete::one_of;
-use nom::character::complete::{alpha1, multispace0};
+use nom::character::complete::{alphanumeric1, multispace0};
 use nom::number::complete::double;
 use nom::sequence::delimited;
 use nom::{branch::alt, IResult};
@@ -177,7 +177,7 @@ impl Ast {
     }
 
     fn variable(partial: &str) -> IResult<&str, Self, Error> {
-        let (remaining, var_name) = delimited(multispace0, alpha1, multispace0)(partial)?;
+        let (remaining, var_name) = delimited(multispace0, alphanumeric1, multispace0)(partial)?;
         let var = Self::Variable(var_name.to_string());
         Ok((remaining, var))
     }
@@ -520,6 +520,11 @@ mod tests {
     // #[test_case("6 + -2" => Ok(vec![Token::Value("6".to_string()), Token::Value("-2".to_string()), Token::Op(Op::Plus)]) ; "negatives are parsed properly")]
     // #[test_case("4+5*3" => Ok(vec![Token::Value("4".to_string()), Token::Value("5".to_string()), Token::Value("3".to_string()), Token::Op(Op::Mul), Token::Op(Op::Plus)]) ; "negatives are parsed properly")]
     fn parse(equation: &str) -> Result<Ast, Error> {
+        Ast::new(equation)
+    }
+
+    #[test_case("3jeff + 5 * 2" => Err(Error::ParseError("error parsing".to_string())) ; "fails to parse bad variable names")]
+    fn fails_to_parse(equation: &str) -> Result<Ast, Error> {
         Ast::new(equation)
     }
 

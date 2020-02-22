@@ -55,3 +55,6 @@ nom = "^5"
 
 [dev-dependencies]
 test-case = "^1"
+
+[profile.release]
+lto = true
