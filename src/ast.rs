@@ -183,40 +183,69 @@ impl Ast {
     }
 
     fn exponent(partial: &str) -> IResult<&str, Self, Error> {
-        todo!("unimplemented")
+        let (right_side_clause, left_side_clause) = take_until("^")(partial)?;
+        let left_side_ast = Self::new(left_side_clause).map_err(nom::Err::Error)?;
+        let right_side_ast = Self::new(&right_side_clause[1..]).map_err(nom::Err::Error)?;
+        Ok((
+            "",
+            Self::Exp(Box::new(left_side_ast), Box::new(right_side_ast)),
+        ))
     }
 
     fn multiplication(partial: &str) -> IResult<&str, Self, Error> {
-        todo!("unimplemented")
+        let (right_side_clause, left_side_clause) = take_until("*")(partial)?;
+        let left_side_ast = Self::new(left_side_clause).map_err(nom::Err::Error)?;
+        let right_side_ast = Self::new(&right_side_clause[1..]).map_err(nom::Err::Error)?;
+        Ok((
+            "",
+            Self::Mul(Box::new(left_side_ast), Box::new(right_side_ast)),
+        ))
     }
 
     fn division(partial: &str) -> IResult<&str, Self, Error> {
-        todo!("unimplemented")
+        let (right_side_clause, left_side_clause) = take_until("/")(partial)?;
+        let left_side_ast = Self::new(left_side_clause).map_err(nom::Err::Error)?;
+        let right_side_ast = Self::new(&right_side_clause[1..]).map_err(nom::Err::Error)?;
+        Ok((
+            "",
+            Self::Div(Box::new(left_side_ast), Box::new(right_side_ast)),
+        ))
     }
 
     fn addition(partial: &str) -> IResult<&str, Self, Error> {
-        todo!("unimplemented")
+        let (right_side_clause, left_side_clause) = take_until("+")(partial)?;
+        let left_side_ast = Self::new(left_side_clause).map_err(nom::Err::Error)?;
+        let right_side_ast = Self::new(&right_side_clause[1..]).map_err(nom::Err::Error)?;
+        Ok((
+            "",
+            Self::Add(Box::new(left_side_ast), Box::new(right_side_ast)),
+        ))
     }
 
     fn subtraction(partial: &str) -> IResult<&str, Self, Error> {
-        todo!("unimplemented")
-    }
-
-    fn parse_expr(partial: &str) -> IResult<&str, Self, Error> {
-        todo!("Haven't implemented yet")
+        let (right_side_clause, left_side_clause) = take_until("-")(partial)?;
+        let left_side_ast = Self::new(left_side_clause).map_err(nom::Err::Error)?;
+        let right_side_ast = Self::new(&right_side_clause[1..]).map_err(nom::Err::Error)?;
+        Ok((
+            "",
+            Self::Sub(Box::new(left_side_ast), Box::new(right_side_ast)),
+        ))
     }
 
     fn parenthesis(partial: &str) -> IResult<&str, Self, Error> {
-        let (remaining, outside_parens) = take_until("(")(partial)?;
-        let (remaining, left_or_inside_parens) =
-            take_till(|c| c == '(' || c == ')')(&remaining[1..])?;
+        let (remaining, left_or_inside_parens) = take_till(|c| c == '(' || c == ')')(partial)?;
+        if remaining.is_empty() && left_or_inside_parens == partial {
+            return Err(nom::Err::Error(Error::ParseError(
+                "Non-fatal error this is not a parenthetical expression".to_string(),
+            )));
+        }
         let result = match remaining.as_bytes() {
-            [b'(', right @ ..] => {
+            [b'(', ..] => {
                 // More parenthesis inside!
                 let left_side_phrase = left_or_inside_parens.trim();
                 // Determine op for left side phrase
                 let left_side_op = Self::get_leftside_op(left_side_phrase);
-                let (right_side_phrase, inner) = Self::parenthesis(remaining)?;
+                let (right_side_phrase, inner) = Self::parenthesis(&remaining[1..])?;
                 let right_side_phrase = right_side_phrase.trim();
                 let right_side_op = Self::get_rightside_op(right_side_phrase);
                 // Determine which side `inner` (the nested parenthesis) ought to be applied to based off of order of operations
@@ -231,7 +260,7 @@ impl Ast {
                     (Err(e), _) | (_, Err(e)) => Err(e),
                 }
             }
-            [b')', right @ ..] => {
+            [b')', ..] => {
                 // We finished this parenthesis pair
                 let inside_parens = left_or_inside_parens.trim();
                 let res = Self::new(inside_parens);
@@ -253,63 +282,139 @@ impl Ast {
 
     fn generate_result<'lifetime>(
         left_op: Option<Op>,
-        left_side_phrase: &str,
+        left_side_phrase: &'lifetime str,
         inner: Ast,
         right_op: Option<Op>,
-        right_side_phrase: &str,
+        right_side_phrase: &'lifetime str,
     ) -> Result<(&'lifetime str, Self), nom::Err<Error>> {
-        if left_op >= right_op {
-            match left_op {
-                Some(Op::Exp) => {
-                    let left_ast =
-                        Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
-                    Ok(("", Self::Exp(Box::new(left_ast), Box::new(inner))))
-                }
-                Some(Op::Mul) => {
-                    let left_ast =
-                        Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
-                    Ok(("", Self::Mul(Box::new(left_ast), Box::new(inner))))
-                }
-                Some(Op::Div) => {
-                    let left_ast =
-                        Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
-                    Ok(("", Self::Div(Box::new(left_ast), Box::new(inner))))
-                }
-                Some(Op::Plus) => {
-                    let left_ast =
-                        Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
-                    Ok(("", Self::Add(Box::new(left_ast), Box::new(inner))))
-                }
-                Some(Op::Minus) => {
-                    let left_ast =
-                        Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
-                    Ok(("", Self::Sub(Box::new(left_ast), Box::new(inner))))
-                }
-                None => Ok(("", inner)),
+        match (left_op, right_op) {
+            (Some(left_op), Some(right_op)) if left_op >= right_op => {
+                let left_ast = Self::get_left_ast(
+                    left_op,
+                    left_side_phrase,
+                    inner,
+                    Some(right_op),
+                    right_side_phrase,
+                )?;
+                Self::get_right_ast(None, "", left_ast.1, right_op, right_side_phrase)
             }
-        } else {
-            match right_op {
-                Some(Op::Exp) => {
-                    let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
-                    Ok(("", Self::Exp(Box::new(right_ast), Box::new(inner))))
-                }
-                Some(Op::Mul) => {
-                    let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
-                    Ok(("", Self::Mul(Box::new(right_ast), Box::new(inner))))
-                }
-                Some(Op::Div) => {
-                    let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
-                    Ok(("", Self::Div(Box::new(right_ast), Box::new(inner))))
-                }
-                Some(Op::Plus) => {
-                    let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
-                    Ok(("", Self::Add(Box::new(right_ast), Box::new(inner))))
-                }
-                Some(Op::Minus) => {
-                    let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
-                    Ok(("", Self::Sub(Box::new(right_ast), Box::new(inner))))
-                }
-                None => Ok(("", inner)),
+            (Some(left_op), None) => Self::get_left_ast(
+                left_op,
+                left_side_phrase,
+                inner,
+                right_op,
+                right_side_phrase,
+            ),
+            (Some(left_op), Some(right_op)) => {
+                // Right op takes precendence
+                let right_ast = Self::get_right_ast(
+                    Some(left_op),
+                    left_side_phrase,
+                    inner,
+                    right_op,
+                    right_side_phrase,
+                )?;
+                Self::get_left_ast(left_op, left_side_phrase, right_ast.1, None, "")
+            }
+            (None, Some(right_op)) => Self::get_right_ast(
+                left_op,
+                left_side_phrase,
+                inner,
+                right_op,
+                right_side_phrase,
+            ),
+            (None, None) => Ok(("", inner)),
+        }
+    }
+
+    fn get_right_ast<'lifetime>(
+        left_op: Option<Op>,
+        left_side_phrase: &'lifetime str,
+        inner: Ast,
+        right_op: Op,
+        right_side_phrase: &'lifetime str,
+    ) -> Result<(&'lifetime str, Self), nom::Err<Error>> {
+        match right_op {
+            Op::Exp => {
+                let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
+                Ok((
+                    left_side_phrase,
+                    Self::Exp(Box::new(inner), Box::new(right_ast)),
+                ))
+            }
+            Op::Mul => {
+                let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
+                Ok((
+                    left_side_phrase,
+                    Self::Mul(Box::new(inner), Box::new(right_ast)),
+                ))
+            }
+            Op::Div => {
+                let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
+                Ok((
+                    left_side_phrase,
+                    Self::Div(Box::new(inner), Box::new(right_ast)),
+                ))
+            }
+            Op::Plus => {
+                let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
+                Ok((
+                    left_side_phrase,
+                    Self::Add(Box::new(inner), Box::new(right_ast)),
+                ))
+            }
+            Op::Minus => {
+                let right_ast = Self::new(&right_side_phrase[1..]).unwrap();
+                Ok((
+                    left_side_phrase,
+                    Self::Sub(Box::new(inner), Box::new(right_ast)),
+                ))
+            }
+        }
+    }
+
+    fn get_left_ast<'lifetime>(
+        left_op: Op,
+        left_side_phrase: &'lifetime str,
+        inner: Ast,
+        right_op: Option<Op>,
+        right_side_phrase: &'lifetime str,
+    ) -> Result<(&'lifetime str, Self), nom::Err<Error>> {
+        match left_op {
+            Op::Exp => {
+                let left_ast = Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
+                Ok((
+                    right_side_phrase,
+                    Self::Exp(Box::new(left_ast), Box::new(inner)),
+                ))
+            }
+            Op::Mul => {
+                let left_ast = Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
+                Ok((
+                    right_side_phrase,
+                    Self::Mul(Box::new(left_ast), Box::new(inner)),
+                ))
+            }
+            Op::Div => {
+                let left_ast = Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
+                Ok((
+                    right_side_phrase,
+                    Self::Div(Box::new(left_ast), Box::new(inner)),
+                ))
+            }
+            Op::Plus => {
+                let left_ast = Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
+                Ok((
+                    right_side_phrase,
+                    Self::Add(Box::new(left_ast), Box::new(inner)),
+                ))
+            }
+            Op::Minus => {
+                let left_ast = Self::new(&left_side_phrase[..left_side_phrase.len() - 1]).unwrap();
+                Ok((
+                    right_side_phrase,
+                    Self::Sub(Box::new(left_ast), Box::new(inner)),
+                ))
             }
         }
     }
@@ -347,15 +452,25 @@ impl Ast {
         let mut result = Err(Error::ParseError("Unknown Parse Error".into()));
         let mut current_remaining = equation;
         loop {
-            let parse_result =
-                alt((Self::parenthesis, Self::value, Self::variable))(current_remaining);
+            let parse_result = alt((
+                Self::parenthesis,
+                Self::subtraction,
+                Self::addition,
+                Self::division,
+                Self::multiplication,
+                Self::exponent,
+                Self::value,
+                Self::variable,
+            ))(current_remaining);
 
             if parse_result.is_ok() {
-                let (remaining, ast) = parse_result.unwrap();
+                let (mut remaining, ast) = parse_result.unwrap();
+                remaining = remaining.trim();
                 if remaining.is_empty() {
                     result = Ok(ast);
                     break;
                 } else {
+                    current_remaining = remaining;
                 }
             } else {
                 match parse_result {
@@ -388,6 +503,8 @@ mod tests {
     #[test_case("2" => Ok(Value(2.0)) ; "single-digit integers are parsed properly")]
     #[test_case("(2)" => Ok(Value(2.0)) ; "values encased by parenthesis are parsed properly")]
     #[test_case("((2))" => Ok(Value(2.0)) ; "values encased in nested parenthesis are parsed properly")]
+    #[test_case("((2) + 3)" => Ok(Add(Box::new(Value(2.0)), Box::new(Value(3.0)))) ; "expressions encased in nested parenthesis are parsed properly")]
+    #[test_case("(5+ (2)/ 3)" => Ok(Add(Box::new(Value(5.0)), Box::new(Div(Box::new(Value(2.0)), Box::new(Value(3.0)))))) ; "left-hand expressions encased in nested parenthesis are parsed properly")]
     #[test_case("256" => Ok(Value(256.0)) ; "multi-digit integers are parsed properly")]
     #[test_case("   256     " => Ok(Value(256.0)) ; "multi-digit integers surrounded with whitespace are parsed properly")]
     #[test_case("2.56" => Ok(Value(2.56)) ; "floats are parsed properly")]
