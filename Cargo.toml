@@ -58,3 +58,4 @@ test-case = "^1"
 
 [profile.release]
 lto = true
+debug = true

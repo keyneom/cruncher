@@ -239,7 +239,7 @@ impl Ast {
                 "Non-fatal error this is not a parenthetical expression".to_string(),
             )));
         }
-        let result = match remaining.as_bytes() {
+        match remaining.as_bytes() {
             [b'(', ..] => {
                 // More parenthesis inside!
                 let left_side_phrase = left_or_inside_parens.trim();
@@ -276,8 +276,7 @@ impl Ast {
                     "parenthesis are not properly balanced".to_string(),
                 )))
             }
-        };
-        result
+        }
     }
 
     fn generate_result<'lifetime>(
