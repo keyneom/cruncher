@@ -556,36 +556,4 @@ mod tests {
         println!("{}", watch.as_millis());
         println!("{}", watch2.as_millis());
     }
-
-    #[test]
-    fn generic() {
-        let mut dict: HashMap<String, Vec<f64>> = HashMap::with_capacity(3);
-        let capacity = 5_000_000;
-        let iterations = 5_000_000;
-        dict.insert("varone".to_owned(), Vec::with_capacity(capacity));
-        dict.insert("vartwo".to_owned(), Vec::with_capacity(capacity));
-        dict.insert("something".to_owned(), Vec::with_capacity(capacity));
-        for i in 1..=iterations {
-            dict.get_mut("varone").unwrap().push(10.0 + f64::from(i));
-            dict.get_mut("vartwo").unwrap().push(20.0 + f64::from(i));
-            dict.get_mut("something").unwrap().push(30.0 + f64::from(i));
-        }
-
-        let t = execute_fn(&dict);
-
-        let dict2: HashMap<String, &[f64]> = dict
-            .iter_mut()
-            .map(|v| (v.0.to_owned(), v.1.as_slice()))
-            .collect();
-
-        let t2 = execute_fn(&dict2);
-    }
-
-    fn execute_fn<S, V>(params: &HashMap<S, V>) -> Vec<f64>
-    where
-        S: Into<String>,
-        V: Iterator<Item = f64>,
-    {
-        Vec::new()
-    }
 }
