@@ -9,7 +9,7 @@ use nom::bytes::complete::tag;
 use nom::bytes::complete::take_till;
 use nom::bytes::complete::take_until;
 use nom::character::complete::one_of;
-use nom::character::complete::{alphanumeric1, multispace0};
+use nom::character::complete::{alphanumeric1, multispace0, multispace1};
 use nom::number::complete::double;
 use nom::sequence::delimited;
 use nom::{branch::alt, IResult};
@@ -172,7 +172,9 @@ impl Ast {
     }
 
     fn value(partial: &str) -> IResult<&str, Self, Error> {
-        let (remaining, val) = delimited(multispace0, double, multispace0)(partial)?;
+        // let (remaining, val) = delimited(multispace0, double, multispace0)(partial)?;
+        let (remaining, val) =
+            delimited(alt((begin, multispace1)), double, alt((end, multispace1)))(partial)?;
         Ok((remaining, Self::Value(val)))
     }
 
