@@ -1,6 +1,31 @@
 # Cruncher
-This library takes a string such as `"x + 2 / 3 * ( z ^ 4 )"` and allows you to pass in a dictionary with values defined for each variable used and get the result.
 
-Right now the tests do the best job of providing examples of how to interact with the library.
+JIT-compiled mathematical expression calculator for Rust.
 
-It is a work in progress but the main functionality is there. The lexer/parser needs to be improved as it is sensitive to spacing.
+This library takes a string such as `"x + 2 / 3 * ( z ^ 4 )"`, parses it, and
+evaluates it with a dictionary of variable values. Expressions can be evaluated
+through an AST interpreter or compiled with Cranelift JIT for bulk evaluation.
+
+## Example
+
+```rust
+use hashbrown::HashMap;
+use cruncher::eval;
+
+assert_eq!(eval("2+2", &HashMap::new()), Ok(4.0));
+assert_eq!(eval("sin(0)", &HashMap::new()), Ok(0.0));
+
+let mut ctx = HashMap::new();
+ctx.insert("x".into(), 3.0);
+assert_eq!(eval("x * 4", &ctx), Ok(12.0));
+```
+
+See the crate docs and tests for more usage, including [`Expr`] reuse and the
+[`JIT`] compiler.
+
+## Status
+
+Work in progress / experimental. The lexer accepts expressions with or without
+spaces around operators (`2+2` and `2 + 2`).
+
+Repository: <https://github.com/keyneom/cruncher>
