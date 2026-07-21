@@ -25,8 +25,8 @@ cranelift-module = "0.134"
 cranelift-codegen = "0.134"
 cranelift-jit = "0.134"
 cranelift-native = "0.134"
-hashbrown = "0.15"
-rayon = "1.10"
+hashbrown = "0.17"
+rayon = "1.11"
 
 [dev-dependencies]
 test-case = "3"
