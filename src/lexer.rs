@@ -246,7 +246,7 @@ mod tests {
             assert!(is_variable_start(*c));
         }
 
-        let non_variable_starts = ['3', 'à', '@', ']', '[', '.'];
+        let non_variable_starts = ['3', '\u{e0}', '@', ']', '[', '.'];
         for c in &non_variable_starts {
             assert!(!is_variable_start(*c));
         }
@@ -256,7 +256,7 @@ mod tests {
             assert!(is_variable_part(*c));
         }
 
-        let non_variable_parts = ['à', '@', '{', '}', '(', ')', '?', '&', '$'];
+        let non_variable_parts = ['\u{e0}', '@', '{', '}', '(', ')', '?', '&', '$'];
         for c in &non_variable_parts {
             assert!(!is_variable_part(*c));
         }
@@ -289,7 +289,7 @@ mod tests {
             assert!(is_value_start(*c));
         }
 
-        let non_value_starts = ['à', '@', '+', '-'];
+        let non_value_starts = ['\u{e0}', '@', '+', '-'];
         for c in &non_value_starts {
             assert!(!is_value_start(*c));
         }
@@ -299,7 +299,7 @@ mod tests {
             assert!(is_value_part(*c));
         }
 
-        let non_value_parts = ['à', '@', '+', '-'];
+        let non_value_parts = ['\u{e0}', '@', '+', '-'];
         for c in &non_value_parts {
             assert!(!is_value_part(*c));
         }

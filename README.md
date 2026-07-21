@@ -29,3 +29,9 @@ Work in progress / experimental. The lexer accepts expressions with or without
 spaces around operators (`2+2` and `2 + 2`).
 
 Repository: <https://github.com/keyneom/cruncher>
+
+## Roadmap
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the path from the current expression
+evaluator toward curves, distributions, and Monte Carlo / scenario analysis.
+

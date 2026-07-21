@@ -91,6 +91,101 @@ impl Expr {
         Self::inner_eval(&self.ast, context.into())
     }
 
+    /// Evaluate the expression over columnar variable data.
+    ///
+    /// Each key in `columns` is a variable name; each value is a slice of samples.
+    /// All used variables must have at least `n` values. Returns `n` results.
+    ///
+    /// This avoids building a per-row `HashMap` and is the preferred path for
+    /// Monte Carlo / scenario batches on the AST interpreter.
+    pub fn eval_batch(
+        &self,
+        columns: &HashMap<String, &[f64]>,
+        n: usize,
+    ) -> Result<Vec<f64>, Error> {
+        // Resolve columns once up front for variables that appear in the AST.
+        let mut needed: Vec<&str> = Vec::new();
+        Self::collect_vars(&self.ast, &mut needed);
+        needed.sort_unstable();
+        needed.dedup();
+
+        let mut resolved: Vec<(&str, &[f64])> = Vec::with_capacity(needed.len());
+        for name in needed {
+            let col = columns.get(name).ok_or_else(|| {
+                Error::NameError(format!("name '{}' is not defined", name))
+            })?;
+            if col.len() < n {
+                return Err(Error::NameError(format!(
+                    "Missing data for parameter: {}",
+                    name
+                )));
+            }
+            resolved.push((name, *col));
+        }
+
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            out.push(Self::inner_eval_row(&self.ast, &resolved, i)?);
+        }
+        Ok(out)
+    }
+
+    fn collect_vars<'a>(ast: &'a Ast, out: &mut Vec<&'a str>) {
+        match ast {
+            Ast::Variable(name) => out.push(name),
+            Ast::Value(_) => {}
+            Ast::Function(_, arg) => Self::collect_vars(arg, out),
+            Ast::Add(l, r) | Ast::Sub(l, r) | Ast::Mul(l, r) | Ast::Div(l, r) | Ast::Exp(l, r) => {
+                Self::collect_vars(l, out);
+                Self::collect_vars(r, out);
+            }
+        }
+    }
+
+    fn inner_eval_row(
+        ast: &Ast,
+        columns: &[(&str, &[f64])],
+        row: usize,
+    ) -> Result<f64, Error> {
+        match *ast {
+            Ast::Variable(ref name) => {
+                for &(n, col) in columns {
+                    if n == name {
+                        return Ok(col[row]);
+                    }
+                }
+                Err(Error::NameError(format!("name '{}' is not defined", name)))
+            }
+            Ast::Value(number) => Ok(number),
+            Ast::Add(ref left, ref right) => Ok(
+                Self::inner_eval_row(left, columns, row)?
+                    + Self::inner_eval_row(right, columns, row)?,
+            ),
+            Ast::Sub(ref left, ref right) => Ok(
+                Self::inner_eval_row(left, columns, row)?
+                    - Self::inner_eval_row(right, columns, row)?,
+            ),
+            Ast::Mul(ref left, ref right) => Ok(
+                Self::inner_eval_row(left, columns, row)?
+                    * Self::inner_eval_row(right, columns, row)?,
+            ),
+            Ast::Div(ref left, ref right) => Ok(
+                Self::inner_eval_row(left, columns, row)?
+                    / Self::inner_eval_row(right, columns, row)?,
+            ),
+            Ast::Exp(ref left, ref right) => Ok(
+                Self::inner_eval_row(left, columns, row)?
+                    .powf(Self::inner_eval_row(right, columns, row)?),
+            ),
+            Ast::Function(ref name, ref arg) => {
+                let func = crate::util::FUNCTIONS.get(name).ok_or_else(|| {
+                    Error::NameError(format!("unknown function '{}'", name))
+                })?;
+                Ok(func(Self::inner_eval_row(arg, columns, row)?))
+            }
+        }
+    }
+
     fn inner_eval(ast: &Ast, context: &HashMap<String, f64>) -> Result<f64, Error> {
         match *ast {
             Ast::Variable(ref name) =>
@@ -188,6 +283,22 @@ mod tests {
             result.err().unwrap().to_string(),
             "NameError: name 'a' is not defined"
         );
+    }
+
+    #[test]
+    fn eval_batch_columns() {
+        let expr = Expr::parse("(var1 + var2 * 3) / (2 + 3) - something").unwrap();
+        let mut owned: HashMap<String, Vec<f64>> = HashMap::new();
+        owned.insert("var1".into(), vec![10.0, 11.0]);
+        owned.insert("var2".into(), vec![20.0, 21.0]);
+        owned.insert("something".into(), vec![30.0, 31.0]);
+        let cols: HashMap<String, &[f64]> = owned
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_slice()))
+            .collect();
+        let results = expr.eval_batch(&cols, 2).unwrap();
+        assert!((results[0] - ((10.0 + 20.0 * 3.0) / 5.0 - 30.0)).abs() < 1e-12);
+        assert!((results[1] - ((11.0 + 21.0 * 3.0) / 5.0 - 31.0)).abs() < 1e-12);
     }
 
     use std::time::Instant;

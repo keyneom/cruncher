@@ -1,6 +1,7 @@
-// Note: crate-level warn(missing_docs)/clippy lints are omitted because rustc 1.95 can ICE
-// while rendering them through cargo's JSON diagnostics on this crate.
-#![allow(dead_code, unused_imports, unused_variables, unused_mut)]
+// Note: rustc 1.95 can ICE rendering diagnostics when terminal width <= 10.
+// `.cargo/config.toml` sets `--diagnostic-width=120` as a workaround
+// (https://github.com/rust-lang/rust/issues/154258).
+#![allow(dead_code)]
 
 //! Cruncher, a crate for dynamic evaluation of mathematical expressions.
 //!
@@ -73,9 +74,6 @@
 //! cruncher is based on an AST interpreter, and uses a simple Shuntting-Yard
 //! algorithm for parsing the expressions. It works only with `f64` data, and
 //! perform a simple constant propagation to optimize the expressions.
-
-#[macro_use]
-extern crate lazy_static;
 
 mod ast;
 mod error;

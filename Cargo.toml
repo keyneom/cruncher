@@ -1,6 +1,6 @@
 [package]
 name = "cruncher"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Mika Sanchez <keyneom122@hotmail.com>"]
 license = "MIT"
 readme = "README.md"
@@ -13,19 +13,20 @@ documentation = "https://docs.rs/cruncher"
 homepage = "https://github.com/keyneom/cruncher"
 repository = "https://github.com/keyneom/cruncher"
 edition = "2021"
+rust-version = "1.80"
 
 [badges]
 maintenance = { status = "experimental" }
 
 [dependencies]
 libm = "0.2"
-lazy_static = "1.5"
 cranelift = "0.134"
 cranelift-module = "0.134"
 cranelift-codegen = "0.134"
 cranelift-jit = "0.134"
 cranelift-native = "0.134"
 hashbrown = "0.15"
+rayon = "1.10"
 
 [dev-dependencies]
 test-case = "3"
@@ -34,3 +35,4 @@ criterion = "0.5"
 [[bench]]
 name = "eval_bench"
 harness = false
+

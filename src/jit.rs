@@ -10,6 +10,7 @@ use libm::{
     acos, acosh, asin, asinh, atan, atanh, cbrt, ceil, cos, cosh, exp, fabs, floor, log, log10,
     log2, pow, sin, sinh, sqrt, tan, tanh,
 };
+use rayon::prelude::*;
 use std::mem;
 use std::slice;
 
@@ -65,7 +66,6 @@ pub struct JIT {
 }
 
 impl Default for JIT {
-    #[must_use]
     fn default() -> Self {
         let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
             .expect("failed to create JITBuilder for host ISA");
@@ -143,10 +143,8 @@ impl JIT {
                 let function = unsafe { mem::transmute::<_, fn() -> f64>(function) };
                 Box::new(
                     move |_params: &HashMap<String, &[f64]>, number_of_evaluations: usize| {
-                        let mut results: Vec<f64> = Vec::with_capacity(number_of_evaluations);
-                        for _i in 0..number_of_evaluations {
-                            results.push(function());
-                        }
+                        let mut results = Vec::with_capacity(number_of_evaluations);
+                        results.extend((0..number_of_evaluations).map(|_| function()));
                         Ok(results)
                     },
                 )
@@ -154,78 +152,30 @@ impl JIT {
             1 => {
                 let function = unsafe { mem::transmute::<_, fn(f64) -> f64>(function) };
                 Box::new(
-                    move |params: &HashMap<String, &[f64]>, number_of_evaluations: usize| {
-                        let mut results: Vec<f64> = Vec::with_capacity(number_of_evaluations);
-                        let param_1 = params.get(&sorted_keys[0]).ok_or_else(|| {
-                            Error::NameError(format!("Missing parameter: {}", &sorted_keys[0]))
-                        })?;
-                        for k in &sorted_keys {
-                            if number_of_evaluations > params[k].len() {
-                                return Err(Error::NameError(format!(
-                                    "Missing data for parameter: {}",
-                                    k
-                                )));
-                            }
-                        }
-                        for i in 0..number_of_evaluations {
-                            results.push(function(param_1[i]));
-                        }
-                        Ok(results)
+                    move |params: &HashMap<String, &[f64]>, n: usize| {
+                        let p0 = Self::require_col(params, &sorted_keys[0], n)?;
+                        Ok(Self::map_batch(n, |i| function(p0[i])))
                     },
                 )
             }
             2 => {
                 let function = unsafe { mem::transmute::<_, fn(f64, f64) -> f64>(function) };
                 Box::new(
-                    move |params: &HashMap<String, &[f64]>, number_of_evaluations: usize| {
-                        let mut results: Vec<f64> = Vec::with_capacity(number_of_evaluations);
-                        let param_1 = params.get(&sorted_keys[0]).ok_or_else(|| {
-                            Error::NameError(format!("Missing parameter: {}", &sorted_keys[0]))
-                        })?;
-                        let param_2 = params.get(&sorted_keys[1]).ok_or_else(|| {
-                            Error::NameError(format!("Missing parameter: {}", &sorted_keys[1]))
-                        })?;
-                        for k in &sorted_keys {
-                            if number_of_evaluations > params[k].len() {
-                                return Err(Error::NameError(format!(
-                                    "Missing data for parameter: {}",
-                                    k
-                                )));
-                            }
-                        }
-                        for i in 0..number_of_evaluations {
-                            results.push(function(param_1[i], param_2[i]));
-                        }
-                        Ok(results)
+                    move |params: &HashMap<String, &[f64]>, n: usize| {
+                        let p0 = Self::require_col(params, &sorted_keys[0], n)?;
+                        let p1 = Self::require_col(params, &sorted_keys[1], n)?;
+                        Ok(Self::map_batch(n, |i| function(p0[i], p1[i])))
                     },
                 )
             }
             3 => {
                 let function = unsafe { mem::transmute::<_, fn(f64, f64, f64) -> f64>(function) };
                 Box::new(
-                    move |params: &HashMap<String, &[f64]>, number_of_evaluations: usize| {
-                        let mut results: Vec<f64> = Vec::with_capacity(number_of_evaluations);
-                        let param_1 = params.get(&sorted_keys[0]).ok_or_else(|| {
-                            Error::NameError(format!("Missing parameter: {}", &sorted_keys[0]))
-                        })?;
-                        let param_2 = params.get(&sorted_keys[1]).ok_or_else(|| {
-                            Error::NameError(format!("Missing parameter: {}", &sorted_keys[1]))
-                        })?;
-                        let param_3 = params.get(&sorted_keys[2]).ok_or_else(|| {
-                            Error::NameError(format!("Missing parameter: {}", &sorted_keys[2]))
-                        })?;
-                        for k in &sorted_keys {
-                            if number_of_evaluations > params[k].len() {
-                                return Err(Error::NameError(format!(
-                                    "Missing data for parameter: {}",
-                                    k
-                                )));
-                            }
-                        }
-                        for i in 0..number_of_evaluations {
-                            results.push(function(param_1[i], param_2[i], param_3[i]));
-                        }
-                        Ok(results)
+                    move |params: &HashMap<String, &[f64]>, n: usize| {
+                        let p0 = Self::require_col(params, &sorted_keys[0], n)?;
+                        let p1 = Self::require_col(params, &sorted_keys[1], n)?;
+                        let p2 = Self::require_col(params, &sorted_keys[2], n)?;
+                        Ok(Self::map_batch(n, |i| function(p0[i], p1[i], p2[i])))
                     },
                 )
             }
@@ -233,36 +183,49 @@ impl JIT {
                 let function =
                     unsafe { mem::transmute::<_, fn(f64, f64, f64, f64) -> f64>(function) };
                 Box::new(
-                    move |params: &HashMap<String, &[f64]>, number_of_evaluations: usize| {
-                        let mut results: Vec<f64> = Vec::with_capacity(number_of_evaluations);
-                        let param_1 = params.get(&sorted_keys[0]).ok_or_else(|| {
-                            Error::NameError(format!("Missing parameter: {}", &sorted_keys[0]))
-                        })?;
-                        let param_2 = params.get(&sorted_keys[1]).ok_or_else(|| {
-                            Error::NameError(format!("Missing parameter: {}", &sorted_keys[1]))
-                        })?;
-                        let param_3 = params.get(&sorted_keys[2]).ok_or_else(|| {
-                            Error::NameError(format!("Missing parameter: {}", &sorted_keys[2]))
-                        })?;
-                        let param_4 = params.get(&sorted_keys[3]).ok_or_else(|| {
-                            Error::NameError(format!("Missing parameter: {}", &sorted_keys[3]))
-                        })?;
-                        for k in &sorted_keys {
-                            if number_of_evaluations > params[k].len() {
-                                return Err(Error::NameError(format!(
-                                    "Missing data for parameter: {}",
-                                    k
-                                )));
-                            }
-                        }
-                        for i in 0..number_of_evaluations {
-                            results.push(function(param_1[i], param_2[i], param_3[i], param_4[i]));
-                        }
-                        Ok(results)
+                    move |params: &HashMap<String, &[f64]>, n: usize| {
+                        let p0 = Self::require_col(params, &sorted_keys[0], n)?;
+                        let p1 = Self::require_col(params, &sorted_keys[1], n)?;
+                        let p2 = Self::require_col(params, &sorted_keys[2], n)?;
+                        let p3 = Self::require_col(params, &sorted_keys[3], n)?;
+                        Ok(Self::map_batch(n, |i| function(p0[i], p1[i], p2[i], p3[i])))
                     },
                 )
             }
             _ => panic!("JIT currently supports at most 4 parameters"),
+        }
+    }
+
+    #[inline]
+    fn require_col<'a>(
+        params: &'a HashMap<String, &[f64]>,
+        key: &str,
+        n: usize,
+    ) -> Result<&'a [f64], Error> {
+        let col = params
+            .get(key)
+            .ok_or_else(|| Error::NameError(format!("Missing parameter: {}", key)))?;
+        if n > col.len() {
+            return Err(Error::NameError(format!("Missing data for parameter: {}", key)));
+        }
+        Ok(col)
+    }
+
+    /// Fill a result buffer, using rayon when the batch is large enough to amortize overhead.
+    #[inline]
+    fn map_batch<F>(n: usize, f: F) -> Vec<f64>
+    where
+        F: Fn(usize) -> f64 + Sync + Send,
+    {
+        // Threshold chosen so tiny benches stay single-threaded while multi-million
+        // Monte Carlo columns can use all cores.
+        const PARALLEL_THRESHOLD: usize = 16_384;
+        if n >= PARALLEL_THRESHOLD {
+            (0..n).into_par_iter().map(f).collect()
+        } else {
+            let mut results = Vec::with_capacity(n);
+            results.extend((0..n).map(f));
+            results
         }
     }
 
@@ -343,12 +306,7 @@ impl JIT {
         };
 
         let expression_val = trans.translate_expr(ast);
-
-        let return_variable = trans.variables[".the_return"];
-        trans.builder.def_var(return_variable, expression_val);
-        let return_value = trans.builder.use_var(return_variable);
-
-        trans.builder.ins().return_(&[return_value]);
+        trans.builder.ins().return_(&[expression_val]);
         let target_config = trans.module.target_config();
         trans.builder.finalize(target_config);
         Ok(())
@@ -434,9 +392,6 @@ fn declare_variables(
         let var = declare_variable(builder, &mut variables, name);
         builder.def_var(var, value);
     }
-    let zero = builder.ins().f64const(Ieee64::with_float(0.0));
-    let return_variable = declare_variable(builder, &mut variables, ".the_return");
-    builder.def_var(return_variable, zero);
 
     variables
 }

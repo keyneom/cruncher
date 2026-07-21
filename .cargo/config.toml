@@ -1,0 +1,5 @@
+# Workaround for rustc 1.95 annotate-snippets ICE when cargo runs with
+# diagnostic width <= 10 (common in non-TTY / agent environments).
+# See https://github.com/rust-lang/rust/issues/154258
+[build]
+rustflags = ["--diagnostic-width=120"]
