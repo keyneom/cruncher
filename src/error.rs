@@ -19,18 +19,4 @@ impl Display for Error {
     }
 }
 
-impl error::Error for Error {
-    #[must_use]
-    fn description(&self) -> &str {
-        match *self {
-            Self::ParseError(ref message) | Self::NameError(ref message) => message,
-        }
-    }
-
-    #[must_use]
-    fn cause(&self) -> Option<&dyn error::Error> {
-        match *self {
-            Self::ParseError(_) | Self::NameError(_) => None,
-        }
-    }
-}
+impl error::Error for Error {}

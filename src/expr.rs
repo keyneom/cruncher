@@ -118,7 +118,12 @@ impl Expr {
             Ast::Exp(ref left, ref right) => {
                 Ok(Self::inner_eval(left, context)?.powf(Self::inner_eval(right, context)?))
             }
-            Ast::Function(ref func, ref arg) => Ok(func(Self::inner_eval(arg, context)?)),
+            Ast::Function(ref name, ref arg) => {
+                let func = crate::util::FUNCTIONS
+                    .get(name)
+                    .ok_or_else(|| Error::NameError(format!("unknown function '{}'", name)))?;
+                Ok(func(Self::inner_eval(arg, context)?))
+            }
         }
     }
 }
@@ -152,6 +157,9 @@ mod tests {
 
         let eval_pairs = [
             ("3 + 5", empty_context, 8.0),
+            ("2+2", empty_context, 4.0),
+            ("2 + 2", empty_context, 4.0),
+            ("10-3*2", empty_context, 4.0),
             ("2 - 5", empty_context, -3.0),
             ("2 * 5", empty_context, 10.0),
             ("10 / 5", empty_context, 2.0),
@@ -184,6 +192,7 @@ mod tests {
 
     use std::time::Instant;
     #[test]
+    #[ignore = "heavy micro-benchmark; use criterion benches instead"]
     fn bench() {
         let watch = Instant::now();
         let t = Expr::parse("(var1 + var2 * 3) / (2 + 3) - something").unwrap();

@@ -21,7 +21,7 @@ pub enum Ast {
     /// <left> ^ <right>
     Exp(Box<Ast>, Box<Ast>),
     /// fn(<arg>)
-    Function(fn(f64) -> f64, Box<Ast>),
+    Function(String, Box<Ast>),
 }
 
 impl Ast {
@@ -40,9 +40,9 @@ impl Ast {
         if let Some(token) = tokens.pop() {
             match token {
                 Token::Value(value) => {
-                    if let Some(&func) = FUNCTIONS.get(&value) {
+                    if FUNCTIONS.contains_key(&value) {
                         let args = Box::new(Self::from_tokens(tokens, " in function call")?);
-                        Ok(Self::Function(func, args))
+                        Ok(Self::Function(value, args))
                     } else if let Ok(number) = value.parse() {
                         Ok(Self::Value(number))
                     } else if is_variable(&value) {
@@ -83,12 +83,13 @@ impl Ast {
     pub fn optimize(self) -> Self {
         match self {
             Self::Variable(_) | Self::Value(_) => self,
-            Self::Function(func, arg) => {
+            Self::Function(name, arg) => {
                 let arg = arg.optimize();
-                if let Some(arg) = arg.value() {
-                    return Self::Value(func(arg));
+                if let Some(arg_val) = arg.value() {
+                    let func = FUNCTIONS[&name];
+                    return Self::Value(func(arg_val));
                 }
-                return Self::Function(func, Box::new(arg));
+                return Self::Function(name, Box::new(arg));
             }
             Self::Add(left, right) => {
                 let left = left.optimize();

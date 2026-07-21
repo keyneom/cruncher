@@ -4,10 +4,12 @@ use crate::ast::Ast;
 use crate::error::Error;
 use crate::lexer::Lexer;
 use cranelift::prelude::*;
-use cranelift_codegen::binemit::NullTrapSink;
-use cranelift_module::{DataContext, Linkage, Module};
-use cranelift_simplejit::{SimpleJITBackend, SimpleJITBuilder};
-use libm::pow;
+use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_module::{DataDescription, Linkage, Module};
+use libm::{
+    acos, acosh, asin, asinh, atan, atanh, cbrt, ceil, cos, cosh, exp, fabs, floor, log, log10,
+    log2, pow, sin, sinh, sqrt, tan, tanh,
+};
 use std::mem;
 use std::slice;
 
@@ -15,23 +17,48 @@ const POW: &str = "pow";
 
 type ReturnFunction = dyn Fn(&HashMap<String, &[f64]>, usize) -> Result<Vec<f64>, Error>;
 
+/// Host math symbols exposed to JIT-compiled expressions.
+fn math_symbols() -> Vec<(&'static str, *const u8)> {
+    vec![
+        (POW, pow as *const u8),
+        ("sqrt", sqrt as *const u8),
+        ("cbrt", cbrt as *const u8),
+        ("sin", sin as *const u8),
+        ("cos", cos as *const u8),
+        ("tan", tan as *const u8),
+        ("asin", asin as *const u8),
+        ("acos", acos as *const u8),
+        ("atan", atan as *const u8),
+        ("sinh", sinh as *const u8),
+        ("cosh", cosh as *const u8),
+        ("tanh", tanh as *const u8),
+        ("asinh", asinh as *const u8),
+        ("acosh", acosh as *const u8),
+        ("atanh", atanh as *const u8),
+        ("floor", floor as *const u8),
+        ("ceil", ceil as *const u8),
+        ("abs", fabs as *const u8),
+        ("exp", exp as *const u8),
+        ("ln", log as *const u8),
+        ("log2", log2 as *const u8),
+        ("log10", log10 as *const u8),
+    ]
+}
+
 /// The basic JIT class.
 pub struct JIT {
     /// The function builder context, which is reused across multiple
     /// FunctionBuilder instances.
     builder_context: FunctionBuilderContext,
 
-    /// The main Cranelift context, which holds the state for codegen. Cranelift
-    /// separates this from `Module` to allow for parallel compilation, with a
-    /// context per thread, though this isn't in the simple demo here.
+    /// The main Cranelift context, which holds the state for codegen.
     ctx: codegen::Context,
 
-    /// The data context, which is to data objects what `ctx` is to functions.
-    data_ctx: DataContext,
+    /// The data description, which is to data objects what `ctx` is to functions.
+    data_description: DataDescription,
 
-    /// The module, with the simplejit backend, which manages the JIT'd
-    /// functions.
-    module: Module<SimpleJITBackend>,
+    /// The module, with the jit backend, which manages the JIT'd functions.
+    module: JITModule,
 
     /// The parameter names and their indexes for function calls
     required_parameters: HashMap<String, usize>,
@@ -40,18 +67,16 @@ pub struct JIT {
 impl Default for JIT {
     #[must_use]
     fn default() -> Self {
-        // Windows calling conventions are not supported yet.
-        if cfg!(windows) {
-            unimplemented!();
+        let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
+            .expect("failed to create JITBuilder for host ISA");
+        for (name, ptr) in math_symbols() {
+            builder.symbol(name, ptr);
         }
-
-        let mut builder = SimpleJITBuilder::new(cranelift_module::default_libcall_names());
-        let _s = builder.symbol(POW, pow as *const u8);
-        let module = Module::new(builder);
+        let module = JITModule::new(builder);
         Self {
             builder_context: FunctionBuilderContext::new(),
             ctx: module.make_context(),
-            data_ctx: DataContext::new(),
+            data_description: DataDescription::new(),
             module,
             required_parameters: HashMap::new(),
         }
@@ -65,11 +90,8 @@ impl JIT {
         Self::default()
     }
 
-    /// Compile a string in the toy language into machine code.
+    /// Compile a string expression into machine code.
     pub fn compile(&mut self, input: &str) -> Result<Box<ReturnFunction>, Error> {
-        // First, parse the string, producing AST nodes.
-        // let (name, params, the_return, stmts) =
-        //     parser::function(&input).map_err(|e| e.to_string())?;
         let mut lexer = Lexer::new(input);
         let ast = Ast::from_tokens(
             &mut lexer
@@ -79,47 +101,31 @@ impl JIT {
         )
         .map_err(|e| Error::ParseError(e.to_string()))?;
 
-        // Then, translate the AST nodes into Cranelift IR.
+        self.required_parameters.clear();
         self.translate(&ast)?;
 
-        // Next, declare the function to simplejit. Functions must be declared
-        // before they can be called, or defined.
-        //
-        // TODO: This may be an area where the API should be streamlined; should
-        // we have a version of `declare_function` that automatically declares
-        // the function?
         let id = self
             .module
-            .declare_function(&input, Linkage::Export, &self.ctx.func.signature)
+            .declare_function(input, Linkage::Export, &self.ctx.func.signature)
             .map_err(|e| Error::ParseError(e.to_string()))?;
 
-        let trap_sink = &mut NullTrapSink {};
-
-        // Define the function to simplejit. This finishes compilation, although
-        // there may be outstanding relocations to perform. Currently, simplejit
-        // cannot finish relocations until all functions to be called are
-        // defined. For this toy demo for now, we'll just finalize the function
-        // below.
         self.module
-            .define_function(id, &mut self.ctx, trap_sink)
+            .define_function(id, &mut self.ctx)
             .map_err(|e| Error::ParseError(e.to_string()))?;
 
-        // Now that compilation is finished, we can clear out the context state.
         self.module.clear_context(&mut self.ctx);
 
-        // Finalize the functions which we just defined, which resolves any
-        // outstanding relocations (patching in addresses, now that they're
-        // available).
-        self.module.finalize_definitions();
+        self.module
+            .finalize_definitions()
+            .map_err(|e| Error::ParseError(e.to_string()))?;
 
-        // We can now retrieve a pointer to the machine code.
         let code = self.module.get_finalized_function(id);
 
         Ok(Self::dynamic_param_fn(code, &self.required_parameters))
     }
 
     fn get_sorted_keys(keys: &HashMap<String, usize>) -> Vec<String> {
-        let mut sorted_keys = vec![];
+        let mut sorted_keys = Vec::with_capacity(keys.len());
         for k in keys.keys() {
             sorted_keys.push(k.to_owned());
         }
@@ -132,14 +138,12 @@ impl JIT {
         required_parameters: &HashMap<String, usize>,
     ) -> Box<ReturnFunction> {
         let sorted_keys = Self::get_sorted_keys(required_parameters);
-        // FIXME: Make a macro that will define these for us, maybe up to 256 params
         match required_parameters.len() {
             0 => {
                 let function = unsafe { mem::transmute::<_, fn() -> f64>(function) };
                 Box::new(
                     move |_params: &HashMap<String, &[f64]>, number_of_evaluations: usize| {
                         let mut results: Vec<f64> = Vec::with_capacity(number_of_evaluations);
-                        // We don't just assume this will return the same value in case someone is using a random number generator in a custom function or something similar
                         for _i in 0..number_of_evaluations {
                             results.push(function());
                         }
@@ -155,7 +159,6 @@ impl JIT {
                         let param_1 = params.get(&sorted_keys[0]).ok_or_else(|| {
                             Error::NameError(format!("Missing parameter: {}", &sorted_keys[0]))
                         })?;
-                        // Ensure all the slices have at least as much data as necessary to do the requested number of evaluations
                         for k in &sorted_keys {
                             if number_of_evaluations > params[k].len() {
                                 return Err(Error::NameError(format!(
@@ -182,7 +185,6 @@ impl JIT {
                         let param_2 = params.get(&sorted_keys[1]).ok_or_else(|| {
                             Error::NameError(format!("Missing parameter: {}", &sorted_keys[1]))
                         })?;
-                        // Ensure all the slices have at least as much data as necessary to do the requested number of evaluations
                         for k in &sorted_keys {
                             if number_of_evaluations > params[k].len() {
                                 return Err(Error::NameError(format!(
@@ -212,7 +214,6 @@ impl JIT {
                         let param_3 = params.get(&sorted_keys[2]).ok_or_else(|| {
                             Error::NameError(format!("Missing parameter: {}", &sorted_keys[2]))
                         })?;
-                        // Ensure all the slices have at least as much data as necessary to do the requested number of evaluations
                         for k in &sorted_keys {
                             if number_of_evaluations > params[k].len() {
                                 return Err(Error::NameError(format!(
@@ -246,7 +247,6 @@ impl JIT {
                         let param_4 = params.get(&sorted_keys[3]).ok_or_else(|| {
                             Error::NameError(format!("Missing parameter: {}", &sorted_keys[3]))
                         })?;
-                        // Ensure all the slices have at least as much data as necessary to do the requested number of evaluations
                         for k in &sorted_keys {
                             if number_of_evaluations > params[k].len() {
                                 return Err(Error::NameError(format!(
@@ -258,32 +258,30 @@ impl JIT {
                         for i in 0..number_of_evaluations {
                             results.push(function(param_1[i], param_2[i], param_3[i], param_4[i]));
                         }
-
                         Ok(results)
                     },
                 )
             }
-            _ => panic!(),
+            _ => panic!("JIT currently supports at most 4 parameters"),
         }
     }
 
     /// Create a zero-initialized data section.
     pub fn create_data(&mut self, name: &str, contents: Vec<u8>) -> Result<&[u8], Error> {
-        // The steps here are analogous to `compile`, except that data is much
-        // simpler than functions.
-        self.data_ctx.define(contents.into_boxed_slice());
+        self.data_description.define(contents.into_boxed_slice());
         let id = self
             .module
-            .declare_data(name, Linkage::Export, true, false, None)
+            .declare_data(name, Linkage::Export, true, false)
             .map_err(|e| Error::NameError(e.to_string()))?;
 
         self.module
-            .define_data(id, &self.data_ctx)
+            .define_data(id, &self.data_description)
             .map_err(|e| Error::ParseError(e.to_string()))?;
-        self.data_ctx.clear();
-        self.module.finalize_definitions();
+        self.data_description.clear();
+        self.module
+            .finalize_definitions()
+            .map_err(|e| Error::ParseError(e.to_string()))?;
         let buffer = self.module.get_finalized_data(id);
-        // TODO: Can we move the unsafe into cranelift?
         Ok(unsafe { slice::from_raw_parts(buffer.0, buffer.1) })
     }
 
@@ -307,7 +305,6 @@ impl JIT {
         }
     }
 
-    // Translate from toy-language AST nodes into Cranelift IR.
     fn translate(&mut self, ast: &Ast) -> Result<(), Error> {
         let mut parameter_names = vec![];
         Self::get_parameters(ast, &mut parameter_names);
@@ -324,83 +321,55 @@ impl JIT {
                 .push(AbiParam::new(types::F64));
         }
 
-        // Our toy language currently only supports one return value, though
-        // Cranelift is designed to support more.
         self.ctx
             .func
             .signature
             .returns
             .push(AbiParam::new(types::F64));
 
-        // Create the builder to builder a function.
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
 
-        // Create the entry block, to start emitting code in.
         let entry_block = builder.create_block();
-
-        // Since this is the entry block, add block parameters corresponding to
-        // the function's parameters.
-        //
-        // TODO: Streamline the API here.
         builder.append_block_params_for_function_params(entry_block);
-
-        // Tell the builder to emit code in this block.
         builder.switch_to_block(entry_block);
-
-        // And, tell the builder that this block will have no further
-        // predecessors. Since it's the entry block, it won't have any
-        // predecessors.
         builder.seal_block(entry_block);
 
-        // The toy language allows variables to be declared implicitly.
-        // Walk the AST and declare all implicitly-declared variables.
-        let variables = declare_variables(&mut builder, &parameter_names, &ast, entry_block);
+        let variables = declare_variables(&mut builder, &parameter_names, entry_block);
 
-        // Now translate the statements of the function body.
         let mut trans = FunctionTranslator {
             builder,
             variables,
             module: &mut self.module,
         };
 
-        let expression_val = trans.translate_expr(&ast);
+        let expression_val = trans.translate_expr(ast);
 
-        // Set up the return variable of the function. Above, we declared a
-        // variable to hold the return value. Here, we just do a use of that
-        // variable.
         let return_variable = trans.variables[".the_return"];
         trans.builder.def_var(return_variable, expression_val);
         let return_value = trans.builder.use_var(return_variable);
 
-        // Emit the return instruction.
         trans.builder.ins().return_(&[return_value]);
-
-        // Tell the builder we're done with this function.
-        trans.builder.finalize();
+        let target_config = trans.module.target_config();
+        trans.builder.finalize(target_config);
         Ok(())
     }
 }
 
-/// A collection of state used for translating from toy-language AST nodes
-/// into Cranelift IR.
+/// A collection of state used for translating AST nodes into Cranelift IR.
 struct FunctionTranslator<'a> {
     builder: FunctionBuilder<'a>,
     variables: HashMap<String, Variable>,
-    module: &'a mut Module<SimpleJITBackend>,
+    module: &'a mut JITModule,
 }
 
 impl<'a> FunctionTranslator<'a> {
-    /// When you write out instructions in Cranelift, you get back `Value`s. You
-    /// can then use these references in other instructions.
     fn translate_expr(&mut self, ast: &Ast) -> Value {
         match *ast {
             Ast::Value(val) => self.builder.ins().f64const(Ieee64::with_float(val)),
             Ast::Variable(ref name) => {
-                // `use_var` is used to read the value of a variable.
                 let variable = self.variables.get(name).expect("variable not defined");
                 self.builder.use_var(*variable)
             }
-            // Ast::Function(ref func_name, ref args) => self.translate_call(func_name, args),
             Ast::Add(ref left, ref right) => {
                 let lhs = self.translate_expr(left);
                 let rhs = self.translate_expr(right);
@@ -426,22 +395,21 @@ impl<'a> FunctionTranslator<'a> {
                 let rhs = self.translate_expr(right);
                 self.translate_call(POW, &[lhs, rhs])
             }
-            _ => self.builder.ins().f64const(Ieee64::with_float(0.0)),
+            Ast::Function(ref name, ref arg) => {
+                let arg_val = self.translate_expr(arg);
+                self.translate_call(name, &[arg_val])
+            }
         }
     }
 
     fn translate_call(&mut self, name: &str, args: &[Value]) -> Value {
         let mut sig = self.module.make_signature();
 
-        // Add a parameter for each argument.
         for _arg in args {
             sig.params.push(AbiParam::new(types::F64));
         }
-
-        // For simplicity for now, just make all calls return a single I64.
         sig.returns.push(AbiParam::new(types::F64));
 
-        // TODO: Streamline the API here?
         let callee = self
             .module
             .declare_function(name, Linkage::Import, &sig)
@@ -449,81 +417,100 @@ impl<'a> FunctionTranslator<'a> {
         let local_callee = self
             .module
             .declare_func_in_func(callee, &mut self.builder.func);
-        let call = self.builder.ins().call(local_callee, &args);
+        let call = self.builder.ins().call(local_callee, args);
         self.builder.inst_results(call)[0]
-    }
-
-    fn translate_global_data_addr(&mut self, name: String) -> Value {
-        let sym = self
-            .module
-            .declare_data(&name, Linkage::Export, true, false, None)
-            .expect("problem declaring data object");
-        let local_id = self
-            .module
-            .declare_data_in_func(sym, &mut self.builder.func);
-
-        let pointer = self.module.target_config().pointer_type();
-        self.builder.ins().symbol_value(pointer, local_id)
     }
 }
 
 fn declare_variables(
     builder: &mut FunctionBuilder,
     params: &[&str],
-    stmts: &Ast,
     entry_block: Block,
 ) -> HashMap<String, Variable> {
     let mut variables = HashMap::new();
-    let mut index = 0;
 
     for (i, name) in params.iter().enumerate() {
-        // TODO: cranelift_frontend should really have an API to make it easy to set
-        // up param variables.
         let value = builder.block_params(entry_block)[i];
-        let var = declare_variable(builder, &mut variables, &mut index, name);
+        let var = declare_variable(builder, &mut variables, name);
         builder.def_var(var, value);
     }
     let zero = builder.ins().f64const(Ieee64::with_float(0.0));
-    let return_variable = declare_variable(builder, &mut variables, &mut index, ".the_return");
+    let return_variable = declare_variable(builder, &mut variables, ".the_return");
     builder.def_var(return_variable, zero);
 
     variables
 }
 
-/// Declare a single variable declaration.
 fn declare_variable(
     builder: &mut FunctionBuilder,
     variables: &mut HashMap<String, Variable>,
-    index: &mut usize,
     name: &str,
 ) -> Variable {
-    let var = Variable::new(*index);
-    if !variables.contains_key(name) {
-        variables.insert(name.into(), var);
-        builder.declare_var(var, types::F64);
-        *index += 1;
-    }
-    var
+    *variables
+        .entry(name.into())
+        .or_insert_with(|| builder.declare_var(types::F64))
 }
 
 #[cfg(test)]
 mod tests {
     use super::HashMap;
-    use crate::jit::ReturnFunction;
-    use std::process;
-    use std::time::Instant;
+    use crate::jit::JIT;
 
     #[test]
+    fn compile_constants_and_ops() {
+        let mut jit = JIT::new();
+        let f = jit.compile("2+2").unwrap();
+        let params = HashMap::new();
+        assert_eq!(f(&params, 1).unwrap()[0], 4.0);
+
+        let f = jit.compile("3 * 5 + 1").unwrap();
+        assert_eq!(f(&params, 1).unwrap()[0], 16.0);
+    }
+
+    #[test]
+    fn compile_math_functions() {
+        let mut jit = JIT::new();
+        let params = HashMap::new();
+
+        let f = jit.compile("sqrt(9)").unwrap();
+        assert!((f(&params, 1).unwrap()[0] - 3.0).abs() < 1e-10);
+
+        let f = jit.compile("sin(0)").unwrap();
+        assert!((f(&params, 1).unwrap()[0]).abs() < 1e-10);
+
+        let f = jit.compile("abs(-7)").unwrap();
+        assert!((f(&params, 1).unwrap()[0] - 7.0).abs() < 1e-10);
+
+        let f = jit.compile("2 ^ 3").unwrap();
+        assert!((f(&params, 1).unwrap()[0] - 8.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn compile_with_variables() {
+        let mut jit = JIT::new();
+        let f = jit.compile("x + y * 2").unwrap();
+        let mut owned: HashMap<String, Vec<f64>> = HashMap::new();
+        owned.insert("x".into(), vec![1.0, 2.0]);
+        owned.insert("y".into(), vec![3.0, 4.0]);
+        let params: HashMap<String, &[f64]> = owned
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_slice()))
+            .collect();
+        let results = f(&params, 2).unwrap();
+        assert_eq!(results[0], 7.0);
+        assert_eq!(results[1], 10.0);
+    }
+
+    #[test]
+    #[ignore = "heavy micro-benchmark; use criterion benches instead"]
     fn bench() {
+        use crate::jit::ReturnFunction;
+        use std::process;
+        use std::time::Instant;
+
         let watch = Instant::now();
         let mut jit = super::JIT::new();
 
-        // A small test function.
-        //
-        // The `(c)` declares a return variable; the function returns whatever value
-        // it was assigned when the function exits. Note that there are multiple
-        // assignments, so the input is not in SSA form, but that's ok because
-        // Cranelift handles all the details of translating into SSA form itself.
         let compiled_formulas: Vec<Box<ReturnFunction>> = vec![
             "(var1 + var2 * 3) / (2 + 3) - something",
             "(var1 - var2 / 3) * (2 - 3) + something",
@@ -531,7 +518,6 @@ mod tests {
         ]
         .into_iter()
         .map(|formula_string| {
-            // Pass the string to the JIT, and it returns a pointer to machine code.
             jit.compile(formula_string).unwrap_or_else(|msg| {
                 dbg!(msg);
                 process::exit(1);
@@ -557,7 +543,6 @@ mod tests {
         let watch = watch.elapsed();
 
         let mut results = vec![];
-
         let watch2 = Instant::now();
         for compiled_formula in compiled_formulas {
             let result = compiled_formula(&dict2, capacity);

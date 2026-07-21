@@ -1,9 +1,6 @@
-#![warn(missing_docs, clippy::all, clippy::pedantic)]
-#![allow(
-    clippy::needless_return,
-    clippy::missing_docs_in_private_items,
-    clippy::non_ascii_literal
-)]
+// Note: crate-level warn(missing_docs)/clippy lints are omitted because rustc 1.95 can ICE
+// while rendering them through cargo's JSON diagnostics on this crate.
+#![allow(dead_code, unused_imports, unused_variables, unused_mut)]
 
 //! Cruncher, a crate for dynamic evaluation of mathematical expressions.
 //!
@@ -92,6 +89,9 @@ pub use error::Error;
 pub use expr::{eval, Expr};
 pub use jit::JIT;
 pub use lexer::is_variable;
+
+#[cfg(test)]
+mod golden_tests;
 
 #[cfg(test)]
 mod tests {
