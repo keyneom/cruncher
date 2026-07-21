@@ -33,12 +33,16 @@ pub fn is_variable(ident: &str) -> bool {
 /// An helper struct for lexing the input
 pub struct Lexer<'a> {
     input: Peekable<Chars<'a>>,
+    /// True when the previous emitted token was a value or `)`.
+    /// Used to distinguish infix `+`/`-` from signed literals.
+    after_value: bool,
 }
 
 impl<'a> Lexer<'a> {
-    pub fn new(string: &str) -> Lexer {
+    pub fn new(string: &str) -> Lexer<'_> {
         Lexer {
             input: string.chars().peekable(),
+            after_value: false,
         }
     }
 
@@ -113,25 +117,49 @@ impl<'a> Lexer<'a> {
         if let Some(c) = self.input.next() {
             let token = match c {
                 ' ' | '\t' | '\n' | '\r' => return self.next_token(),
+                '+' | '-' => {
+                    // After a value or `)`, `+`/`-` are infix operators.
+                    // Otherwise they introduce a signed numeric literal when followed by a digit/`.`.
+                    if self.after_value {
+                        if c == '+' {
+                            Token::Op(Op::Plus)
+                        } else {
+                            Token::Op(Op::Minus)
+                        }
+                    } else if self.input.peek().map_or(false, |p| p.is_ascii_digit() || *p == '.') {
+                        let mut ident = String::new();
+                        ident.push(c);
+                        'signed: while let Some(&ch) = self.input.peek() {
+                            if is_value_part(ch)
+                                || ((ch == '+' || ch == '-') && is_exponent_sign_context(&ident))
+                            {
+                                self.input.next();
+                                ident.push(ch);
+                            } else {
+                                break 'signed;
+                            }
+                        }
+                        Token::Value(ident)
+                    } else if c == '+' {
+                        Token::Op(Op::Plus)
+                    } else {
+                        Token::Op(Op::Minus)
+                    }
+                }
                 c if is_value_start(c) => {
                     let mut ident = String::new();
                     ident.push(c);
-                    'value: while let Some(&c) = self.input.peek() {
-                        if is_value_part(c) {
+                    'value: while let Some(&ch) = self.input.peek() {
+                        if is_value_part(ch)
+                            || ((ch == '+' || ch == '-') && is_exponent_sign_context(&ident))
+                        {
                             self.input.next();
-                            ident.push(c);
+                            ident.push(ch);
                         } else {
                             break 'value;
                         }
                     }
-                    // Special case to handle numbers starting with + or -
-                    if ident == "+" {
-                        Token::Op(Op::Plus)
-                    } else if ident == "-" {
-                        Token::Op(Op::Minus)
-                    } else {
-                        Token::Value(ident)
-                    }
+                    Token::Value(ident)
                 }
                 '*' => Token::Op(Op::Mul),
                 '/' => Token::Op(Op::Div),
@@ -145,6 +173,7 @@ impl<'a> Lexer<'a> {
                     )));
                 }
             };
+            self.after_value = matches!(token, Token::Value(_) | Token::RParen);
             Ok(Some(token))
         } else {
             Ok(None)
@@ -154,12 +183,32 @@ impl<'a> Lexer<'a> {
 
 /// Check if `c` can appear at the first character of a value
 fn is_value_start(c: char) -> bool {
-    c == '+' || c == '-' || c.is_digit(10) || is_variable_start(c)
+    c.is_ascii_digit() || is_variable_start(c)
 }
 
-/// Check if `c` can appear inside a value
+/// Check if `c` can appear inside a value (not including exponent signs).
 fn is_value_part(c: char) -> bool {
-    c == '+' || c == '-' || c == '.' || is_variable_part(c)
+    c == '.' || is_variable_part(c)
+}
+
+/// Allow `+`/`-` only as the sign of a scientific-notation exponent (`1e-10`).
+fn is_exponent_sign_context(ident: &str) -> bool {
+    let bytes = ident.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    let last = bytes[bytes.len() - 1];
+    if last != b'e' && last != b'E' {
+        return false;
+    }
+    let start = if bytes[0] == b'+' || bytes[0] == b'-' {
+        1
+    } else {
+        0
+    };
+    let body = &bytes[start..bytes.len() - 1];
+    body.iter().any(|b| b.is_ascii_digit())
+        && body.iter().all(|b| b.is_ascii_digit() || *b == b'.')
 }
 
 /// Check if `c` can appear at the first character of a variable
@@ -181,8 +230,11 @@ mod tests {
     use crate::token::{Op, Token};
     use test_case::test_case;
 
-    #[test_case("2 + 2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Plus)]) ; "addition is parsed properly")]
-    #[test_case("2+2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Plus)]) ; "inconclusive -- spaces are parsed properly")]
+    #[test_case("2 + 2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Plus)]) ; "addition with spaces")]
+    #[test_case("2+2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Plus)]) ; "addition without spaces")]
+    #[test_case("10-3" => Ok(vec![Token::Value("10".to_string()), Token::Value("3".to_string()), Token::Op(Op::Minus)]) ; "subtraction without spaces")]
+    #[test_case("1e-3" => Ok(vec![Token::Value("1e-3".to_string())]) ; "scientific notation with negative exponent")]
+    #[test_case("2.5E+2" => Ok(vec![Token::Value("2.5E+2".to_string())]) ; "scientific notation with positive exponent")]
     fn parse(equation: &str) -> Result<Vec<Token>, Error> {
         Lexer::new(equation).parse()
     }
@@ -232,22 +284,22 @@ mod tests {
 
     #[test]
     fn values() {
-        let value_starts = ['c', 'Z', '_', 'f', '3', '+', '-'];
+        let value_starts = ['c', 'Z', '_', 'f', '3'];
         for c in &value_starts {
             assert!(is_value_start(*c));
         }
 
-        let non_value_starts = ['à', '@'];
+        let non_value_starts = ['à', '@', '+', '-'];
         for c in &non_value_starts {
             assert!(!is_value_start(*c));
         }
 
-        let value_parts = ['c', 'Z', '_', 'f', '3', '-', '+', '.'];
+        let value_parts = ['c', 'Z', '_', 'f', '3', '.'];
         for c in &value_parts {
             assert!(is_value_part(*c));
         }
 
-        let non_value_parts = ['à', '@'];
+        let non_value_parts = ['à', '@', '+', '-'];
         for c in &non_value_parts {
             assert!(!is_value_part(*c));
         }
