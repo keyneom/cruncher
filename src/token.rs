@@ -1,3 +1,5 @@
+use crate::error::Span;
+
 /// Possible tokens to find in the input string
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -9,6 +11,13 @@ pub enum Token {
     LParen,
     /// Right parenthesis
     RParen,
+}
+
+/// A token with its byte span in the source expression.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpannedToken {
+    pub token: Token,
+    pub span: Span,
 }
 
 /// Allowed operators in the algorithm
@@ -43,5 +52,15 @@ impl Op {
     /// Check if the operator is right associative
     pub fn is_right_associative(self) -> bool {
         !self.is_left_associative()
+    }
+
+    /// Pratt binding powers `(left_bp, right_bp)`.
+    pub fn binding_power(self) -> (u8, u8) {
+        match self {
+            Self::Plus | Self::Minus => (1, 2),
+            Self::Mul | Self::Div => (3, 4),
+            // Right-associative: right bp lower than left.
+            Self::Exp => (6, 5),
+        }
     }
 }

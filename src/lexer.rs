@@ -1,10 +1,9 @@
-use crate::error::Error;
-use crate::token::{Op, Token};
+use crate::error::{Error, Span};
+use crate::token::{Op, SpannedToken, Token};
 use crate::util::FUNCTIONS;
 use std::iter::Peekable;
 use std::str::Chars;
 
-#[must_use]
 /// Check if `ident` is a valid variable name
 ///
 /// # Examples
@@ -15,6 +14,7 @@ use std::str::Chars;
 /// assert_eq!(is_variable("__abc3"), true);
 /// assert_eq!(is_variable("34zb"), false);
 /// ```
+#[must_use]
 pub fn is_variable(ident: &str) -> bool {
     let mut chars = ident.chars();
     // Check first char
@@ -27,30 +27,47 @@ pub fn is_variable(ident: &str) -> bool {
             return false;
         }
     }
-    return true;
+    true
 }
 
 /// An helper struct for lexing the input
 pub struct Lexer<'a> {
     input: Peekable<Chars<'a>>,
+    /// Byte offset of the next character to be consumed.
+    offset: usize,
     /// True when the previous emitted token was a value or `)`.
     /// Used to distinguish infix `+`/`-` from signed literals.
     after_value: bool,
 }
 
 impl<'a> Lexer<'a> {
+    #[must_use]
     pub fn new(string: &str) -> Lexer<'_> {
         Lexer {
             input: string.chars().peekable(),
+            offset: 0,
             after_value: false,
         }
     }
 
+    /// Tokenize into an infix stream with spans (for the Pratt parser).
+    pub fn tokenize(&mut self) -> Result<Vec<SpannedToken>, Error> {
+        let mut output = Vec::new();
+        while let Some(st) = self.next_token()? {
+            output.push(st);
+        }
+        Ok(output)
+    }
+
+    /// Legacy shunting-yard parse producing reverse-polish `Token`s.
+    ///
+    /// Prefer [`Self::tokenize`] + [`crate::parser::parse_tokens`].
     pub fn parse(&mut self) -> Result<Vec<Token>, Error> {
         let mut output = Vec::new();
         let mut operators = Vec::new();
 
-        'tokens: while let Some(token) = self.next_token()? {
+        'tokens: while let Some(st) = self.next_token()? {
+            let token = st.token;
             match token {
                 Token::Value(ref name) if FUNCTIONS.contains_key(name) => {
                     operators.push(token.clone());
@@ -98,14 +115,14 @@ impl<'a> Lexer<'a> {
                             other => panic!("Internal bug: found {:?} in operators stack", other),
                         }
                     }
-                    return Err(Error::ParseError("mismatched parenthesis".into()));
+                    return Err(Error::parse_at("mismatched parenthesis", st.span));
                 }
             }
         }
 
         while let Some(token) = operators.pop() {
             match token {
-                Token::LParen => return Err(Error::ParseError("mismatched parenthesis".into())),
+                Token::LParen => return Err(Error::parse("mismatched parenthesis")),
                 Token::Op(_) => output.push(token),
                 other => panic!("Internal bug: found {:?} in operators stack", other),
             }
@@ -113,71 +130,91 @@ impl<'a> Lexer<'a> {
         Ok(output)
     }
 
-    fn next_token(&mut self) -> Result<Option<Token>, Error> {
-        if let Some(c) = self.input.next() {
-            let token = match c {
-                ' ' | '\t' | '\n' | '\r' => return self.next_token(),
-                '+' | '-' => {
-                    // After a value or `)`, `+`/`-` are infix operators.
-                    // Otherwise they introduce a signed numeric literal when followed by a digit/`.`.
-                    if self.after_value {
-                        if c == '+' {
-                            Token::Op(Op::Plus)
-                        } else {
-                            Token::Op(Op::Minus)
-                        }
-                    } else if self.input.peek().map_or(false, |p| p.is_ascii_digit() || *p == '.') {
-                        let mut ident = String::new();
-                        ident.push(c);
-                        'signed: while let Some(&ch) = self.input.peek() {
-                            if is_value_part(ch)
-                                || ((ch == '+' || ch == '-') && is_exponent_sign_context(&ident))
-                            {
-                                self.input.next();
-                                ident.push(ch);
-                            } else {
-                                break 'signed;
-                            }
-                        }
-                        Token::Value(ident)
-                    } else if c == '+' {
+    fn bump_char(&mut self) -> Option<char> {
+        let c = self.input.next()?;
+        self.offset += c.len_utf8();
+        Some(c)
+    }
+
+    fn next_token(&mut self) -> Result<Option<SpannedToken>, Error> {
+        // Skip whitespace
+        while let Some(&c) = self.input.peek() {
+            if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+                self.bump_char();
+            } else {
+                break;
+            }
+        }
+
+        let start = self.offset;
+        let Some(c) = self.bump_char() else {
+            return Ok(None);
+        };
+
+        let token = match c {
+            '+' | '-' => {
+                // After a value or `)`, `+`/`-` are infix operators.
+                // Otherwise they introduce a signed numeric literal when followed by a digit/`.`.
+                if self.after_value {
+                    if c == '+' {
                         Token::Op(Op::Plus)
                     } else {
                         Token::Op(Op::Minus)
                     }
-                }
-                c if is_value_start(c) => {
+                } else if self
+                    .input
+                    .peek()
+                    .map_or(false, |p| p.is_ascii_digit() || *p == '.')
+                {
                     let mut ident = String::new();
                     ident.push(c);
-                    'value: while let Some(&ch) = self.input.peek() {
+                    'signed: while let Some(&ch) = self.input.peek() {
                         if is_value_part(ch)
                             || ((ch == '+' || ch == '-') && is_exponent_sign_context(&ident))
                         {
-                            self.input.next();
+                            self.bump_char();
                             ident.push(ch);
                         } else {
-                            break 'value;
+                            break 'signed;
                         }
                     }
                     Token::Value(ident)
+                } else if c == '+' {
+                    Token::Op(Op::Plus)
+                } else {
+                    Token::Op(Op::Minus)
                 }
-                '*' => Token::Op(Op::Mul),
-                '/' => Token::Op(Op::Div),
-                '^' => Token::Op(Op::Exp),
-                '(' => Token::LParen,
-                ')' => Token::RParen,
-                other => {
-                    return Err(Error::ParseError(format!(
-                        "unexpected characted in input: {}",
-                        other
-                    )));
+            }
+            c if is_value_start(c) => {
+                let mut ident = String::new();
+                ident.push(c);
+                'value: while let Some(&ch) = self.input.peek() {
+                    if is_value_part(ch)
+                        || ((ch == '+' || ch == '-') && is_exponent_sign_context(&ident))
+                    {
+                        self.bump_char();
+                        ident.push(ch);
+                    } else {
+                        break 'value;
+                    }
                 }
-            };
-            self.after_value = matches!(token, Token::Value(_) | Token::RParen);
-            Ok(Some(token))
-        } else {
-            Ok(None)
-        }
+                Token::Value(ident)
+            }
+            '*' => Token::Op(Op::Mul),
+            '/' => Token::Op(Op::Div),
+            '^' => Token::Op(Op::Exp),
+            '(' => Token::LParen,
+            ')' => Token::RParen,
+            other => {
+                return Err(Error::parse_at(
+                    format!("unexpected character in input: {}", other),
+                    Span::new(start, self.offset),
+                ));
+            }
+        };
+        let span = Span::new(start, self.offset);
+        self.after_value = matches!(token, Token::Value(_) | Token::RParen);
+        Ok(Some(SpannedToken { token, span }))
     }
 }
 
@@ -230,13 +267,26 @@ mod tests {
     use crate::token::{Op, Token};
     use test_case::test_case;
 
-    #[test_case("2 + 2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Plus)]) ; "addition with spaces")]
-    #[test_case("2+2" => Ok(vec![Token::Value("2".to_string()), Token::Value("2".to_string()), Token::Op(Op::Plus)]) ; "addition without spaces")]
-    #[test_case("10-3" => Ok(vec![Token::Value("10".to_string()), Token::Value("3".to_string()), Token::Op(Op::Minus)]) ; "subtraction without spaces")]
+    #[test_case("2 + 2" => Ok(vec![Token::Value("2".to_string()), Token::Op(Op::Plus), Token::Value("2".to_string())]) ; "addition with spaces")]
+    #[test_case("2+2" => Ok(vec![Token::Value("2".to_string()), Token::Op(Op::Plus), Token::Value("2".to_string())]) ; "addition without spaces")]
+    #[test_case("10-3" => Ok(vec![Token::Value("10".to_string()), Token::Op(Op::Minus), Token::Value("3".to_string())]) ; "subtraction without spaces")]
     #[test_case("1e-3" => Ok(vec![Token::Value("1e-3".to_string())]) ; "scientific notation with negative exponent")]
     #[test_case("2.5E+2" => Ok(vec![Token::Value("2.5E+2".to_string())]) ; "scientific notation with positive exponent")]
-    fn parse(equation: &str) -> Result<Vec<Token>, Error> {
-        Lexer::new(equation).parse()
+    fn tokenize_infix(equation: &str) -> Result<Vec<Token>, Error> {
+        Ok(Lexer::new(equation)
+            .tokenize()?
+            .into_iter()
+            .map(|st| st.token)
+            .collect())
+    }
+
+    #[test]
+    fn tokenize_spans_cover_source() {
+        let tokens = Lexer::new("a+b").tokenize().unwrap();
+        assert_eq!(tokens[0].span.start, 0);
+        assert_eq!(tokens[0].span.end, 1);
+        assert_eq!(tokens[1].token, Token::Op(Op::Plus));
+        assert_eq!(tokens[2].span.start, 2);
     }
 
     #[test]

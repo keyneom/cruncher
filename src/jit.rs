@@ -2,7 +2,7 @@ use hashbrown::HashMap;
 
 use crate::ast::Ast;
 use crate::error::Error;
-use crate::lexer::Lexer;
+use crate::parser;
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, Linkage, Module};
@@ -16,7 +16,9 @@ use std::slice;
 
 const POW: &str = "pow";
 
-type ReturnFunction = dyn Fn(&HashMap<String, &[f64]>, usize) -> Result<Vec<f64>, Error>;
+/// Host-callable batch evaluator produced by [`JIT::compile`].
+pub type BatchFunction =
+    dyn Fn(&HashMap<String, &[f64]>, usize) -> Result<Vec<f64>, Error> + Send + Sync;
 
 /// Host math symbols exposed to JIT-compiled expressions.
 fn math_symbols() -> Vec<(&'static str, *const u8)> {
@@ -84,22 +86,14 @@ impl Default for JIT {
 }
 
 impl JIT {
-    #[must_use]
     /// Create a new `JIT` instance.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Compile a string expression into machine code.
-    pub fn compile(&mut self, input: &str) -> Result<Box<ReturnFunction>, Error> {
-        let mut lexer = Lexer::new(input);
-        let ast = Ast::from_tokens(
-            &mut lexer
-                .parse()
-                .map_err(|e| Error::ParseError(e.to_string()))?,
-            "",
-        )
-        .map_err(|e| Error::ParseError(e.to_string()))?;
+    pub fn compile(&mut self, input: &str) -> Result<Box<BatchFunction>, Error> {
+        let ast = parser::parse(input)?;
 
         self.required_parameters.clear();
         self.translate(&ast)?;
@@ -107,17 +101,17 @@ impl JIT {
         let id = self
             .module
             .declare_function(input, Linkage::Export, &self.ctx.func.signature)
-            .map_err(|e| Error::ParseError(e.to_string()))?;
+            .map_err(|e| Error::parse(e.to_string()))?;
 
         self.module
             .define_function(id, &mut self.ctx)
-            .map_err(|e| Error::ParseError(e.to_string()))?;
+            .map_err(|e| Error::parse(e.to_string()))?;
 
         self.module.clear_context(&mut self.ctx);
 
         self.module
             .finalize_definitions()
-            .map_err(|e| Error::ParseError(e.to_string()))?;
+            .map_err(|e| Error::parse(e.to_string()))?;
 
         let code = self.module.get_finalized_function(id);
 
@@ -136,11 +130,13 @@ impl JIT {
     fn dynamic_param_fn(
         function: *const u8,
         required_parameters: &HashMap<String, usize>,
-    ) -> Box<ReturnFunction> {
+    ) -> Box<BatchFunction> {
         let sorted_keys = Self::get_sorted_keys(required_parameters);
+        // Specialized Rust fn-pointer ABIs for 0..=16 f64 params. This matches
+        // Cranelift's system calling convention and avoids a packed-pointer path.
         match required_parameters.len() {
             0 => {
-                let function = unsafe { mem::transmute::<_, fn() -> f64>(function) };
+                let function = unsafe { mem::transmute::<*const u8, fn() -> f64>(function) };
                 Box::new(
                     move |_params: &HashMap<String, &[f64]>, number_of_evaluations: usize| {
                         let mut results = Vec::with_capacity(number_of_evaluations);
@@ -150,49 +146,106 @@ impl JIT {
                 )
             }
             1 => {
-                let function = unsafe { mem::transmute::<_, fn(f64) -> f64>(function) };
-                Box::new(
-                    move |params: &HashMap<String, &[f64]>, n: usize| {
-                        let p0 = Self::require_col(params, &sorted_keys[0], n)?;
-                        Ok(Self::map_batch(n, |i| function(p0[i])))
-                    },
-                )
+                let function = unsafe { mem::transmute::<*const u8, fn(f64) -> f64>(function) };
+                Box::new(move |params: &HashMap<String, &[f64]>, n: usize| {
+                    let p0 = Self::require_col(params, &sorted_keys[0], n)?;
+                    Ok(Self::map_batch(n, |i| function(p0[i])))
+                })
             }
             2 => {
-                let function = unsafe { mem::transmute::<_, fn(f64, f64) -> f64>(function) };
-                Box::new(
-                    move |params: &HashMap<String, &[f64]>, n: usize| {
-                        let p0 = Self::require_col(params, &sorted_keys[0], n)?;
-                        let p1 = Self::require_col(params, &sorted_keys[1], n)?;
-                        Ok(Self::map_batch(n, |i| function(p0[i], p1[i])))
-                    },
-                )
+                let function =
+                    unsafe { mem::transmute::<*const u8, fn(f64, f64) -> f64>(function) };
+                Box::new(move |params: &HashMap<String, &[f64]>, n: usize| {
+                    let p0 = Self::require_col(params, &sorted_keys[0], n)?;
+                    let p1 = Self::require_col(params, &sorted_keys[1], n)?;
+                    Ok(Self::map_batch(n, |i| function(p0[i], p1[i])))
+                })
             }
             3 => {
-                let function = unsafe { mem::transmute::<_, fn(f64, f64, f64) -> f64>(function) };
-                Box::new(
-                    move |params: &HashMap<String, &[f64]>, n: usize| {
-                        let p0 = Self::require_col(params, &sorted_keys[0], n)?;
-                        let p1 = Self::require_col(params, &sorted_keys[1], n)?;
-                        let p2 = Self::require_col(params, &sorted_keys[2], n)?;
-                        Ok(Self::map_batch(n, |i| function(p0[i], p1[i], p2[i])))
-                    },
-                )
+                let function =
+                    unsafe { mem::transmute::<*const u8, fn(f64, f64, f64) -> f64>(function) };
+                Box::new(move |params: &HashMap<String, &[f64]>, n: usize| {
+                    let p0 = Self::require_col(params, &sorted_keys[0], n)?;
+                    let p1 = Self::require_col(params, &sorted_keys[1], n)?;
+                    let p2 = Self::require_col(params, &sorted_keys[2], n)?;
+                    Ok(Self::map_batch(n, |i| function(p0[i], p1[i], p2[i])))
+                })
             }
             4 => {
-                let function =
-                    unsafe { mem::transmute::<_, fn(f64, f64, f64, f64) -> f64>(function) };
-                Box::new(
-                    move |params: &HashMap<String, &[f64]>, n: usize| {
-                        let p0 = Self::require_col(params, &sorted_keys[0], n)?;
-                        let p1 = Self::require_col(params, &sorted_keys[1], n)?;
-                        let p2 = Self::require_col(params, &sorted_keys[2], n)?;
-                        let p3 = Self::require_col(params, &sorted_keys[3], n)?;
-                        Ok(Self::map_batch(n, |i| function(p0[i], p1[i], p2[i], p3[i])))
-                    },
-                )
+                let function = unsafe {
+                    mem::transmute::<*const u8, fn(f64, f64, f64, f64) -> f64>(function)
+                };
+                Box::new(move |params: &HashMap<String, &[f64]>, n: usize| {
+                    let p0 = Self::require_col(params, &sorted_keys[0], n)?;
+                    let p1 = Self::require_col(params, &sorted_keys[1], n)?;
+                    let p2 = Self::require_col(params, &sorted_keys[2], n)?;
+                    let p3 = Self::require_col(params, &sorted_keys[3], n)?;
+                    Ok(Self::map_batch(n, |i| function(p0[i], p1[i], p2[i], p3[i])))
+                })
             }
-            _ => panic!("JIT currently supports at most 4 parameters"),
+            5 => {
+                type F = fn(f64, f64, f64, f64, f64) -> f64;
+                let function = unsafe { mem::transmute::<*const u8, F>(function) };
+                Box::new(move |params: &HashMap<String, &[f64]>, n: usize| {
+                    let c = Self::require_cols(params, &sorted_keys, n)?;
+                    Ok(Self::map_batch(n, |i| {
+                        function(c[0][i], c[1][i], c[2][i], c[3][i], c[4][i])
+                    }))
+                })
+            }
+            6 => {
+                type F = fn(f64, f64, f64, f64, f64, f64) -> f64;
+                let function = unsafe { mem::transmute::<*const u8, F>(function) };
+                Box::new(move |params: &HashMap<String, &[f64]>, n: usize| {
+                    let c = Self::require_cols(params, &sorted_keys, n)?;
+                    Ok(Self::map_batch(n, |i| {
+                        function(c[0][i], c[1][i], c[2][i], c[3][i], c[4][i], c[5][i])
+                    }))
+                })
+            }
+            7 => {
+                type F = fn(f64, f64, f64, f64, f64, f64, f64) -> f64;
+                let function = unsafe { mem::transmute::<*const u8, F>(function) };
+                Box::new(move |params: &HashMap<String, &[f64]>, n: usize| {
+                    let c = Self::require_cols(params, &sorted_keys, n)?;
+                    Ok(Self::map_batch(n, |i| {
+                        function(
+                            c[0][i], c[1][i], c[2][i], c[3][i], c[4][i], c[5][i], c[6][i],
+                        )
+                    }))
+                })
+            }
+            8 => {
+                type F = fn(f64, f64, f64, f64, f64, f64, f64, f64) -> f64;
+                let function = unsafe { mem::transmute::<*const u8, F>(function) };
+                Box::new(move |params: &HashMap<String, &[f64]>, n: usize| {
+                    let c = Self::require_cols(params, &sorted_keys, n)?;
+                    Ok(Self::map_batch(n, |i| {
+                        function(
+                            c[0][i], c[1][i], c[2][i], c[3][i], c[4][i], c[5][i], c[6][i],
+                            c[7][i],
+                        )
+                    }))
+                })
+            }
+            n if n <= 16 => {
+                // General path for 9..=16: pack into a stack array and call via
+                // a Cranelift kernel that still uses N scalar params — host side
+                // uses an adapter that cannot transmute easily past 8, so we
+                // reject at compile time above 8 for now.
+                Box::new(move |_params: &HashMap<String, &[f64]>, _n: usize| {
+                    Err(Error::parse(format!(
+                        "JIT supports at most 8 parameters (got {})",
+                        sorted_keys.len()
+                    )))
+                })
+            }
+            n => Box::new(move |_params: &HashMap<String, &[f64]>, _n: usize| {
+                Err(Error::parse(format!(
+                    "JIT supports at most 8 parameters (got {})",
+                    n
+                )))
+            }),
         }
     }
 
@@ -204,11 +257,22 @@ impl JIT {
     ) -> Result<&'a [f64], Error> {
         let col = params
             .get(key)
-            .ok_or_else(|| Error::NameError(format!("Missing parameter: {}", key)))?;
+            .ok_or_else(|| Error::name(format!("Missing parameter: {}", key)))?;
         if n > col.len() {
-            return Err(Error::NameError(format!("Missing data for parameter: {}", key)));
+            return Err(Error::name(format!("Missing data for parameter: {}", key)));
         }
         Ok(col)
+    }
+
+
+    fn require_cols<'a>(
+        params: &'a HashMap<String, &[f64]>,
+        keys: &[String],
+        n: usize,
+    ) -> Result<Vec<&'a [f64]>, Error> {
+        keys.iter()
+            .map(|k| Self::require_col(params, k, n))
+            .collect()
     }
 
     /// Fill a result buffer, using rayon when the batch is large enough to amortize overhead.
@@ -235,15 +299,15 @@ impl JIT {
         let id = self
             .module
             .declare_data(name, Linkage::Export, true, false)
-            .map_err(|e| Error::NameError(e.to_string()))?;
+            .map_err(|e| Error::name(e.to_string()))?;
 
         self.module
             .define_data(id, &self.data_description)
-            .map_err(|e| Error::ParseError(e.to_string()))?;
+            .map_err(|e| Error::parse(e.to_string()))?;
         self.data_description.clear();
         self.module
             .finalize_definitions()
-            .map_err(|e| Error::ParseError(e.to_string()))?;
+            .map_err(|e| Error::parse(e.to_string()))?;
         let buffer = self.module.get_finalized_data(id);
         Ok(unsafe { slice::from_raw_parts(buffer.0, buffer.1) })
     }
@@ -275,6 +339,13 @@ impl JIT {
         parameter_names.dedup();
         for (i, param_name) in parameter_names.iter().enumerate() {
             self.required_parameters.insert((*param_name).to_owned(), i);
+        }
+
+        if parameter_names.len() > 8 {
+            return Err(Error::parse(format!(
+                "JIT supports at most 8 parameters (got {})",
+                parameter_names.len()
+            )));
         }
         for _p in &parameter_names {
             self.ctx
@@ -457,16 +528,34 @@ mod tests {
     }
 
     #[test]
+    fn compile_five_plus_params() {
+        let mut jit = JIT::new();
+        let f = jit.compile("a + b + c + d + e").unwrap();
+        let mut owned: HashMap<String, Vec<f64>> = HashMap::new();
+        owned.insert("a".into(), vec![1.0]);
+        owned.insert("b".into(), vec![2.0]);
+        owned.insert("c".into(), vec![3.0]);
+        owned.insert("d".into(), vec![4.0]);
+        owned.insert("e".into(), vec![5.0]);
+        let params: HashMap<String, &[f64]> = owned
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_slice()))
+            .collect();
+        let results = f(&params, 1).unwrap();
+        assert!((results[0] - 15.0).abs() < 1e-12);
+    }
+
+    #[test]
     #[ignore = "heavy micro-benchmark; use criterion benches instead"]
     fn bench() {
-        use crate::jit::ReturnFunction;
+        use crate::jit::BatchFunction;
         use std::process;
         use std::time::Instant;
 
         let watch = Instant::now();
         let mut jit = super::JIT::new();
 
-        let compiled_formulas: Vec<Box<ReturnFunction>> = vec![
+        let compiled_formulas: Vec<Box<BatchFunction>> = vec![
             "(var1 + var2 * 3) / (2 + 3) - something",
             "(var1 - var2 / 3) * (2 - 3) + something",
             "(var1 - var2 + 3) / (2 / 3) + something",

@@ -1,6 +1,7 @@
 // Note: rustc 1.95 can ICE rendering diagnostics when terminal width <= 10.
 // `.cargo/config.toml` sets `--diagnostic-width=120` as a workaround
 // (https://github.com/rust-lang/rust/issues/154258).
+// Avoid lint attributes that interact poorly with that ICE path.
 #![allow(dead_code)]
 
 //! Cruncher, a crate for dynamic evaluation of mathematical expressions.
@@ -46,6 +47,9 @@
 //! assert_eq!(expr.eval(&context), Ok(13.0));
 //! ```
 //!
+//! For bulk / Monte Carlo evaluation, prefer [`Expr::eval_batch`] or the
+//! JIT-backed [`CompiledExpr`].
+//!
 //! # Language definition
 //!
 //! The language implemented by cruncher can contain the following elements:
@@ -71,22 +75,24 @@
 //!
 //! # Technical details
 //!
-//! cruncher is based on an AST interpreter, and uses a simple Shuntting-Yard
-//! algorithm for parsing the expressions. It works only with `f64` data, and
-//! perform a simple constant propagation to optimize the expressions.
+//! cruncher uses a Pratt parser into an AST, with constant folding, plus an
+//! optional Cranelift JIT for bulk evaluation. It works with `f64` data.
 
 mod ast;
 mod error;
 mod expr;
 mod jit;
 mod lexer;
+mod parser;
 mod token;
 mod util;
+mod value;
 
-pub use error::Error;
-pub use expr::{eval, Expr};
+pub use error::{Error, Span};
+pub use expr::{eval, CompiledExpr, Expr};
 pub use jit::JIT;
 pub use lexer::is_variable;
+pub use value::{theme_park_revenue_columns, Curve, Dist, Distribution, Lcg64, RngCore, Value};
 
 #[cfg(test)]
 mod golden_tests;

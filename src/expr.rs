@@ -1,5 +1,5 @@
 use crate::ast::Ast;
-use crate::lexer::Lexer;
+use crate::parser;
 use crate::Error;
 use hashbrown::HashMap;
 
@@ -27,7 +27,7 @@ where
     Expr::parse(input).and_then(|expr| expr.eval(context))
 }
 
-/// A parsed and optimized mathematical expression.
+/// A parsed and optimized mathematical expression (AST interpreter).
 ///
 /// # Examples
 /// ```
@@ -47,7 +47,7 @@ pub struct Expr {
 }
 
 impl Expr {
-    /// Parse the given mathematical `expression` into an `Expr`.
+    /// Parse the given mathematical `expression` into an `Expr` (Pratt parser).
     ///
     /// # Examples
     /// ```
@@ -58,12 +58,9 @@ impl Expr {
     /// assert!(Expr::parse("3eff + 5 * 2").is_err());
     /// ```
     pub fn parse(expression: &str) -> Result<Self, Error> {
-        let mut lexer = Lexer::new(expression);
-
-        match Ast::from_tokens(&mut lexer.parse()?, "") {
-            Ok(ast) => Ok(Self { ast }),
-            Err(err) => Err(err),
-        }
+        Ok(Self {
+            ast: parser::parse(expression)?,
+        })
     }
 
     /// Evaluate the expression in a given optional `context`.
@@ -103,7 +100,19 @@ impl Expr {
         columns: &HashMap<String, &[f64]>,
         n: usize,
     ) -> Result<Vec<f64>, Error> {
-        // Resolve columns once up front for variables that appear in the AST.
+        let mut out = vec![0.0; n];
+        self.eval_batch_into(columns, &mut out)?;
+        Ok(out)
+    }
+
+    /// Like [`Self::eval_batch`], but writes into a caller-provided buffer
+    /// (zero allocation on the hot path aside from the AST walk).
+    pub fn eval_batch_into(
+        &self,
+        columns: &HashMap<String, &[f64]>,
+        out: &mut [f64],
+    ) -> Result<(), Error> {
+        let n = out.len();
         let mut needed: Vec<&str> = Vec::new();
         Self::collect_vars(&self.ast, &mut needed);
         needed.sort_unstable();
@@ -111,23 +120,19 @@ impl Expr {
 
         let mut resolved: Vec<(&str, &[f64])> = Vec::with_capacity(needed.len());
         for name in needed {
-            let col = columns.get(name).ok_or_else(|| {
-                Error::NameError(format!("name '{}' is not defined", name))
-            })?;
+            let col = columns
+                .get(name)
+                .ok_or_else(|| Error::name(format!("name '{}' is not defined", name)))?;
             if col.len() < n {
-                return Err(Error::NameError(format!(
-                    "Missing data for parameter: {}",
-                    name
-                )));
+                return Err(Error::name(format!("Missing data for parameter: {}", name)));
             }
             resolved.push((name, *col));
         }
 
-        let mut out = Vec::with_capacity(n);
-        for i in 0..n {
-            out.push(Self::inner_eval_row(&self.ast, &resolved, i)?);
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = Self::inner_eval_row(&self.ast, &resolved, i)?;
         }
-        Ok(out)
+        Ok(())
     }
 
     fn collect_vars<'a>(ast: &'a Ast, out: &mut Vec<&'a str>) {
@@ -154,7 +159,7 @@ impl Expr {
                         return Ok(col[row]);
                     }
                 }
-                Err(Error::NameError(format!("name '{}' is not defined", name)))
+                Err(Error::name(format!("name '{}' is not defined", name)))
             }
             Ast::Value(number) => Ok(number),
             Ast::Add(ref left, ref right) => Ok(
@@ -173,14 +178,12 @@ impl Expr {
                 Self::inner_eval_row(left, columns, row)?
                     / Self::inner_eval_row(right, columns, row)?,
             ),
-            Ast::Exp(ref left, ref right) => Ok(
-                Self::inner_eval_row(left, columns, row)?
-                    .powf(Self::inner_eval_row(right, columns, row)?),
-            ),
+            Ast::Exp(ref left, ref right) => Ok(Self::inner_eval_row(left, columns, row)?
+                .powf(Self::inner_eval_row(right, columns, row)?)),
             Ast::Function(ref name, ref arg) => {
-                let func = crate::util::FUNCTIONS.get(name).ok_or_else(|| {
-                    Error::NameError(format!("unknown function '{}'", name))
-                })?;
+                let func = crate::util::FUNCTIONS
+                    .get(name)
+                    .ok_or_else(|| Error::name(format!("unknown function '{}'", name)))?;
                 Ok(func(Self::inner_eval_row(arg, columns, row)?))
             }
         }
@@ -188,15 +191,10 @@ impl Expr {
 
     fn inner_eval(ast: &Ast, context: &HashMap<String, f64>) -> Result<f64, Error> {
         match *ast {
-            Ast::Variable(ref name) =>
-            // if the context has a value for the variable name, use the value
-            {
-                context
-                    .get(name)
-                    .map(std::borrow::ToOwned::to_owned)
-                    // Otherwise, we return an error
-                    .ok_or_else(|| Error::NameError(format!("name '{}' is not defined", name)))
-            }
+            Ast::Variable(ref name) => context
+                .get(name)
+                .map(std::borrow::ToOwned::to_owned)
+                .ok_or_else(|| Error::name(format!("name '{}' is not defined", name))),
             Ast::Value(number) => Ok(number),
             Ast::Add(ref left, ref right) => {
                 Ok(Self::inner_eval(left, context)? + Self::inner_eval(right, context)?)
@@ -216,16 +214,55 @@ impl Expr {
             Ast::Function(ref name, ref arg) => {
                 let func = crate::util::FUNCTIONS
                     .get(name)
-                    .ok_or_else(|| Error::NameError(format!("unknown function '{}'", name)))?;
+                    .ok_or_else(|| Error::name(format!("unknown function '{}'", name)))?;
                 Ok(func(Self::inner_eval(arg, context)?))
             }
         }
     }
 }
 
+/// A JIT-compiled expression with a columnar batch API.
+///
+/// Prefer this over repeatedly calling [`Expr::eval`] when evaluating the same
+/// formula over large Monte Carlo / scenario columns.
+pub struct CompiledExpr {
+    func: Box<crate::jit::BatchFunction>,
+}
+
+impl CompiledExpr {
+    /// Parse and JIT-compile `expression`.
+    pub fn compile(expression: &str) -> Result<Self, Error> {
+        let mut jit = crate::jit::JIT::new();
+        Ok(Self {
+            func: jit.compile(expression)?,
+        })
+    }
+
+    /// Evaluate over `n` columnar rows, allocating a new result buffer.
+    pub fn eval_batch(
+        &self,
+        columns: &HashMap<String, &[f64]>,
+        n: usize,
+    ) -> Result<Vec<f64>, Error> {
+        (self.func)(columns, n)
+    }
+
+    /// Evaluate into a caller-provided buffer (`out.len()` rows).
+    pub fn eval_batch_into(
+        &self,
+        columns: &HashMap<String, &[f64]>,
+        out: &mut [f64],
+    ) -> Result<(), Error> {
+        let n = out.len();
+        let values = (self.func)(columns, n)?;
+        out.copy_from_slice(&values);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Expr, HashMap};
+    use super::{CompiledExpr, Expr, HashMap};
 
     #[test]
     fn parse() {
@@ -299,6 +336,26 @@ mod tests {
         let results = expr.eval_batch(&cols, 2).unwrap();
         assert!((results[0] - ((10.0 + 20.0 * 3.0) / 5.0 - 30.0)).abs() < 1e-12);
         assert!((results[1] - ((11.0 + 21.0 * 3.0) / 5.0 - 31.0)).abs() < 1e-12);
+
+        let mut into = [0.0; 2];
+        expr.eval_batch_into(&cols, &mut into).unwrap();
+        assert_eq!(into.to_vec(), results);
+    }
+
+    #[test]
+    fn compiled_expr_batch() {
+        let compiled = CompiledExpr::compile("a + b + c + d + e").unwrap();
+        let mut owned: HashMap<String, Vec<f64>> = HashMap::new();
+        for (name, base) in [("a", 1.0), ("b", 2.0), ("c", 3.0), ("d", 4.0), ("e", 5.0)] {
+            owned.insert(name.into(), vec![base, base + 1.0]);
+        }
+        let cols: HashMap<String, &[f64]> = owned
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_slice()))
+            .collect();
+        let results = compiled.eval_batch(&cols, 2).unwrap();
+        assert!((results[0] - 15.0).abs() < 1e-12);
+        assert!((results[1] - 20.0).abs() < 1e-12);
     }
 
     use std::time::Instant;

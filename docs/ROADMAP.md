@@ -20,7 +20,7 @@ viable at large sample counts.
 | AST interpreter (`Expr::eval`) | Done |
 | Columnar AST batch (`Expr::eval_batch` / `eval_batch_into`) | Done |
 | Cranelift JIT scalar kernel + host batch loop | Done |
-| JIT packed ABI for >4 parameters | Done |
+| JIT ABI for >4 parameters (up to 8) | Done |
 | `CompiledExpr` batch API | Done |
 | Rayon parallel JIT batch (large `n`) | Done |
 | Constant folding + algebraic identities | Done (quick wins) |
@@ -181,7 +181,7 @@ Checklist:
 - [x] Criterion benches (1k / 64k / 1M + compile-once)
 - [x] Pratt parser path
 - [x] Structured errors with spans
-- [x] JIT packed ABI for >4 parameters
+- [x] JIT ABI for >4 parameters (specialized kernels up to 8)
 - [x] `CompiledExpr` batch API
 - [x] Constant folding quick wins (`*0`, `*1`, `+0`, `^0`, `^1`, …)
 - [x] `Curve` / `Dist` / `Distribution` MVP + theme-park helper
